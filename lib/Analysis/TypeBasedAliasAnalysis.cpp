@@ -70,7 +70,7 @@
 //   A a;
 // } B;
 //
-// For an acess to B.a.s, we attach !5 (a path tag node) to the load/store
+// For an access to B.a.s, we attach !5 (a path tag node) to the load/store
 // instruction. The base type is !4 (struct B), the access type is !2 (scalar
 // type short) and the offset is 4.
 //
@@ -135,34 +135,35 @@ using namespace llvm;
 static cl::opt<bool> EnableTBAA("enable-tbaa", cl::init(true));
 
 namespace {
-/// TBAANode - This is a simple wrapper around an MDNode which provides a
-/// higher-level interface by hiding the details of how alias analysis
-/// information is encoded in its operands.
-class TBAANode {
-  const MDNode *Node;
+/// This is a simple wrapper around an MDNode which provides a higher-level
+/// interface by hiding the details of how alias analysis information is encoded
+/// in its operands.
+template<typename MDNodeTy>
+class TBAANodeImpl {
+  MDNodeTy *Node;
 
 public:
-  TBAANode() : Node(nullptr) {}
-  explicit TBAANode(const MDNode *N) : Node(N) {}
+  TBAANodeImpl() : Node(nullptr) {}
+  explicit TBAANodeImpl(MDNodeTy *N) : Node(N) {}
 
   /// getNode - Get the MDNode for this TBAANode.
-  const MDNode *getNode() const { return Node; }
+  MDNodeTy *getNode() const { return Node; }
 
   /// getParent - Get this TBAANode's Alias tree parent.
-  TBAANode getParent() const {
+  TBAANodeImpl<MDNodeTy> getParent() const {
     if (Node->getNumOperands() < 2)
-      return TBAANode();
-    MDNode *P = dyn_cast_or_null<MDNode>(Node->getOperand(1));
+      return TBAANodeImpl<MDNodeTy>();
+    MDNodeTy *P = dyn_cast_or_null<MDNodeTy>(Node->getOperand(1));
     if (!P)
-      return TBAANode();
+      return TBAANodeImpl<MDNodeTy>();
     // Ok, this node has a valid parent. Return it.
-    return TBAANode(P);
+    return TBAANodeImpl<MDNodeTy>(P);
   }
 
-  /// TypeIsImmutable - Test if this TBAANode represents a type for objects
-  /// which are not modified (by any means) in the context where this
+  /// Test if this TBAANode represents a type for objects which are
+  /// not modified (by any means) in the context where this
   /// AliasAnalysis is relevant.
-  bool TypeIsImmutable() const {
+  bool isTypeImmutable() const {
     if (Node->getNumOperands() < 3)
       return false;
     ConstantInt *CI = mdconst::dyn_extract<ConstantInt>(Node->getOperand(2));
@@ -172,32 +173,40 @@ public:
   }
 };
 
+/// \name Specializations of \c TBAANodeImpl for const and non const qualified
+/// \c MDNode.
+/// @{
+typedef TBAANodeImpl<const MDNode> TBAANode;
+typedef TBAANodeImpl<MDNode> MutableTBAANode;
+/// @}
+
 /// This is a simple wrapper around an MDNode which provides a
 /// higher-level interface by hiding the details of how alias analysis
 /// information is encoded in its operands.
-class TBAAStructTagNode {
+template<typename MDNodeTy>
+class TBAAStructTagNodeImpl {
   /// This node should be created with createTBAAStructTagNode.
-  const MDNode *Node;
+  MDNodeTy *Node;
 
 public:
-  explicit TBAAStructTagNode(const MDNode *N) : Node(N) {}
+  explicit TBAAStructTagNodeImpl(MDNodeTy *N) : Node(N) {}
 
   /// Get the MDNode for this TBAAStructTagNode.
-  const MDNode *getNode() const { return Node; }
+  MDNodeTy *getNode() const { return Node; }
 
-  const MDNode *getBaseType() const {
+  MDNodeTy *getBaseType() const {
     return dyn_cast_or_null<MDNode>(Node->getOperand(0));
   }
-  const MDNode *getAccessType() const {
+  MDNodeTy *getAccessType() const {
     return dyn_cast_or_null<MDNode>(Node->getOperand(1));
   }
   uint64_t getOffset() const {
     return mdconst::extract<ConstantInt>(Node->getOperand(2))->getZExtValue();
   }
-  /// TypeIsImmutable - Test if this TBAAStructTagNode represents a type for
-  /// objects which are not modified (by any means) in the context where this
+  /// Test if this TBAAStructTagNode represents a type for objects
+  /// which are not modified (by any means) in the context where this
   /// AliasAnalysis is relevant.
-  bool TypeIsImmutable() const {
+  bool isTypeImmutable() const {
     if (Node->getNumOperands() < 4)
       return false;
     ConstantInt *CI = mdconst::dyn_extract<ConstantInt>(Node->getOperand(3));
@@ -206,6 +215,13 @@ public:
     return CI->getValue()[0];
   }
 };
+
+/// \name Specializations of \c TBAAStructTagNodeImpl for const and non const
+/// qualified \c MDNods.
+/// @{
+typedef TBAAStructTagNodeImpl<const MDNode> TBAAStructTagNode;
+typedef TBAAStructTagNodeImpl<MDNode> MutableTBAAStructTagNode;
+/// @}
 
 /// This is a simple wrapper around an MDNode which provides a
 /// higher-level interface by hiding the details of how alias analysis
@@ -269,25 +285,6 @@ public:
 };
 }
 
-// Register this pass...
-char TypeBasedAliasAnalysis::ID = 0;
-INITIALIZE_AG_PASS(TypeBasedAliasAnalysis, AliasAnalysis, "tbaa",
-                   "Type-Based Alias Analysis", false, true, false)
-
-ImmutablePass *llvm::createTypeBasedAliasAnalysisPass() {
-  return new TypeBasedAliasAnalysis();
-}
-
-bool TypeBasedAliasAnalysis::doInitialization(Module &M) {
-  InitializeAliasAnalysis(this, &M.getDataLayout());
-  return true;
-}
-
-void TypeBasedAliasAnalysis::getAnalysisUsage(AnalysisUsage &AU) const {
-  AU.setPreservesAll();
-  AliasAnalysis::getAnalysisUsage(AU);
-}
-
 /// Check the first operand of the tbaa tag node, if it is a MDNode, we treat
 /// it as struct-path aware TBAA format, otherwise, we treat it as scalar TBAA
 /// format.
@@ -297,56 +294,207 @@ static bool isStructPathTBAA(const MDNode *MD) {
   return isa<MDNode>(MD->getOperand(0)) && MD->getNumOperands() >= 3;
 }
 
-/// Aliases - Test whether the type represented by A may alias the
-/// type represented by B.
-bool TypeBasedAliasAnalysis::Aliases(const MDNode *A, const MDNode *B) const {
-  // Make sure that both MDNodes are struct-path aware.
-  if (isStructPathTBAA(A) && isStructPathTBAA(B))
-    return PathAliases(A, B);
+AliasResult TypeBasedAAResult::alias(const MemoryLocation &LocA,
+                                     const MemoryLocation &LocB) {
+  if (!EnableTBAA)
+    return AAResultBase::alias(LocA, LocB);
 
-  // Keep track of the root node for A and B.
-  TBAANode RootA, RootB;
+  // Get the attached MDNodes. If either value lacks a tbaa MDNode, we must
+  // be conservative.
+  const MDNode *AM = LocA.AATags.TBAA;
+  if (!AM)
+    return AAResultBase::alias(LocA, LocB);
+  const MDNode *BM = LocB.AATags.TBAA;
+  if (!BM)
+    return AAResultBase::alias(LocA, LocB);
 
-  // Climb the tree from A to see if we reach B.
-  for (TBAANode T(A);;) {
-    if (T.getNode() == B)
-      // B is an ancestor of A.
-      return true;
+  // If they may alias, chain to the next AliasAnalysis.
+  if (Aliases(AM, BM))
+    return AAResultBase::alias(LocA, LocB);
 
-    RootA = T;
-    T = T.getParent();
-    if (!T.getNode())
-      break;
-  }
+  // Otherwise return a definitive result.
+  return NoAlias;
+}
 
-  // Climb the tree from B to see if we reach A.
-  for (TBAANode T(B);;) {
-    if (T.getNode() == A)
-      // A is an ancestor of B.
-      return true;
+bool TypeBasedAAResult::pointsToConstantMemory(const MemoryLocation &Loc,
+                                               bool OrLocal) {
+  if (!EnableTBAA)
+    return AAResultBase::pointsToConstantMemory(Loc, OrLocal);
 
-    RootB = T;
-    T = T.getParent();
-    if (!T.getNode())
-      break;
-  }
+  const MDNode *M = Loc.AATags.TBAA;
+  if (!M)
+    return AAResultBase::pointsToConstantMemory(Loc, OrLocal);
 
-  // Neither node is an ancestor of the other.
-
-  // If they have different roots, they're part of different potentially
-  // unrelated type systems, so we must be conservative.
-  if (RootA.getNode() != RootB.getNode())
+  // If this is an "immutable" type, we can assume the pointer is pointing
+  // to constant memory.
+  if ((!isStructPathTBAA(M) && TBAANode(M).isTypeImmutable()) ||
+      (isStructPathTBAA(M) && TBAAStructTagNode(M).isTypeImmutable()))
     return true;
 
-  // If they have the same root, then we've proved there's no alias.
+  return AAResultBase::pointsToConstantMemory(Loc, OrLocal);
+}
+
+FunctionModRefBehavior
+TypeBasedAAResult::getModRefBehavior(ImmutableCallSite CS) {
+  if (!EnableTBAA)
+    return AAResultBase::getModRefBehavior(CS);
+
+  FunctionModRefBehavior Min = FMRB_UnknownModRefBehavior;
+
+  // If this is an "immutable" type, we can assume the call doesn't write
+  // to memory.
+  if (const MDNode *M = CS.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
+    if ((!isStructPathTBAA(M) && TBAANode(M).isTypeImmutable()) ||
+        (isStructPathTBAA(M) && TBAAStructTagNode(M).isTypeImmutable()))
+      Min = FMRB_OnlyReadsMemory;
+
+  return FunctionModRefBehavior(AAResultBase::getModRefBehavior(CS) & Min);
+}
+
+FunctionModRefBehavior TypeBasedAAResult::getModRefBehavior(const Function *F) {
+  // Functions don't have metadata. Just chain to the next implementation.
+  return AAResultBase::getModRefBehavior(F);
+}
+
+ModRefInfo TypeBasedAAResult::getModRefInfo(ImmutableCallSite CS,
+                                            const MemoryLocation &Loc) {
+  if (!EnableTBAA)
+    return AAResultBase::getModRefInfo(CS, Loc);
+
+  if (const MDNode *L = Loc.AATags.TBAA)
+    if (const MDNode *M =
+            CS.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
+      if (!Aliases(L, M))
+        return MRI_NoModRef;
+
+  return AAResultBase::getModRefInfo(CS, Loc);
+}
+
+ModRefInfo TypeBasedAAResult::getModRefInfo(ImmutableCallSite CS1,
+                                            ImmutableCallSite CS2) {
+  if (!EnableTBAA)
+    return AAResultBase::getModRefInfo(CS1, CS2);
+
+  if (const MDNode *M1 =
+          CS1.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
+    if (const MDNode *M2 =
+            CS2.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
+      if (!Aliases(M1, M2))
+        return MRI_NoModRef;
+
+  return AAResultBase::getModRefInfo(CS1, CS2);
+}
+
+bool MDNode::isTBAAVtableAccess() const {
+  if (!isStructPathTBAA(this)) {
+    if (getNumOperands() < 1)
+      return false;
+    if (MDString *Tag1 = dyn_cast<MDString>(getOperand(0))) {
+      if (Tag1->getString() == "vtable pointer")
+        return true;
+    }
+    return false;
+  }
+
+  // For struct-path aware TBAA, we use the access type of the tag.
+  if (getNumOperands() < 2)
+    return false;
+  MDNode *Tag = cast_or_null<MDNode>(getOperand(1));
+  if (!Tag)
+    return false;
+  if (MDString *Tag1 = dyn_cast<MDString>(Tag->getOperand(0))) {
+    if (Tag1->getString() == "vtable pointer")
+      return true;
+  }
   return false;
 }
 
-/// Test whether the struct-path tag represented by A may alias the
-/// struct-path tag represented by B.
-bool TypeBasedAliasAnalysis::PathAliases(const MDNode *A,
-                                         const MDNode *B) const {
-  // Verify that both input nodes are struct-path aware.
+MDNode *MDNode::getMostGenericTBAA(MDNode *A, MDNode *B) {
+  if (!A || !B)
+    return nullptr;
+
+  if (A == B)
+    return A;
+
+  // For struct-path aware TBAA, we use the access type of the tag.
+  assert(isStructPathTBAA(A) && isStructPathTBAA(B) &&
+         "Auto upgrade should have taken care of this!");
+  A = cast_or_null<MDNode>(MutableTBAAStructTagNode(A).getAccessType());
+  if (!A)
+    return nullptr;
+  B = cast_or_null<MDNode>(MutableTBAAStructTagNode(B).getAccessType());
+  if (!B)
+    return nullptr;
+
+  SmallSetVector<MDNode *, 4> PathA;
+  MutableTBAANode TA(A);
+  while (TA.getNode()) {
+    if (PathA.count(TA.getNode()))
+      report_fatal_error("Cycle found in TBAA metadata.");
+    PathA.insert(TA.getNode());
+    TA = TA.getParent();
+  }
+
+  SmallSetVector<MDNode *, 4> PathB;
+  MutableTBAANode TB(B);
+  while (TB.getNode()) {
+    if (PathB.count(TB.getNode()))
+      report_fatal_error("Cycle found in TBAA metadata.");
+    PathB.insert(TB.getNode());
+    TB = TB.getParent();
+  }
+
+  int IA = PathA.size() - 1;
+  int IB = PathB.size() - 1;
+
+  MDNode *Ret = nullptr;
+  while (IA >= 0 && IB >= 0) {
+    if (PathA[IA] == PathB[IB])
+      Ret = PathA[IA];
+    else
+      break;
+    --IA;
+    --IB;
+  }
+
+  // We either did not find a match, or the only common base "type" is
+  // the root node.  In either case, we don't have any useful TBAA
+  // metadata to attach.
+  if (!Ret || Ret->getNumOperands() < 2)
+    return nullptr;
+
+  // We need to convert from a type node to a tag node.
+  Type *Int64 = IntegerType::get(A->getContext(), 64);
+  Metadata *Ops[3] = {Ret, Ret,
+                      ConstantAsMetadata::get(ConstantInt::get(Int64, 0))};
+  return MDNode::get(A->getContext(), Ops);
+}
+
+void Instruction::getAAMetadata(AAMDNodes &N, bool Merge) const {
+  if (Merge)
+    N.TBAA =
+        MDNode::getMostGenericTBAA(N.TBAA, getMetadata(LLVMContext::MD_tbaa));
+  else
+    N.TBAA = getMetadata(LLVMContext::MD_tbaa);
+
+  if (Merge)
+    N.Scope = MDNode::getMostGenericAliasScope(
+        N.Scope, getMetadata(LLVMContext::MD_alias_scope));
+  else
+    N.Scope = getMetadata(LLVMContext::MD_alias_scope);
+
+  if (Merge)
+    N.NoAlias =
+        MDNode::intersect(N.NoAlias, getMetadata(LLVMContext::MD_noalias));
+  else
+    N.NoAlias = getMetadata(LLVMContext::MD_noalias);
+}
+
+/// Aliases - Test whether the type represented by A may alias the
+/// type represented by B.
+bool TypeBasedAAResult::Aliases(const MDNode *A, const MDNode *B) const {
+  // Verify that both input nodes are struct-path aware.  Auto-upgrade should
+  // have taken care of this.
   assert(isStructPathTBAA(A) && "MDNode A is not struct-path aware.");
   assert(isStructPathTBAA(B) && "MDNode B is not struct-path aware.");
 
@@ -406,201 +554,34 @@ bool TypeBasedAliasAnalysis::PathAliases(const MDNode *A,
   return false;
 }
 
-AliasResult TypeBasedAliasAnalysis::alias(const MemoryLocation &LocA,
-                                          const MemoryLocation &LocB) {
-  if (!EnableTBAA)
-    return AliasAnalysis::alias(LocA, LocB);
+AnalysisKey TypeBasedAA::Key;
 
-  // Get the attached MDNodes. If either value lacks a tbaa MDNode, we must
-  // be conservative.
-  const MDNode *AM = LocA.AATags.TBAA;
-  if (!AM)
-    return AliasAnalysis::alias(LocA, LocB);
-  const MDNode *BM = LocB.AATags.TBAA;
-  if (!BM)
-    return AliasAnalysis::alias(LocA, LocB);
-
-  // If they may alias, chain to the next AliasAnalysis.
-  if (Aliases(AM, BM))
-    return AliasAnalysis::alias(LocA, LocB);
-
-  // Otherwise return a definitive result.
-  return NoAlias;
+TypeBasedAAResult TypeBasedAA::run(Function &F, FunctionAnalysisManager &AM) {
+  return TypeBasedAAResult();
 }
 
-bool TypeBasedAliasAnalysis::pointsToConstantMemory(const MemoryLocation &Loc,
-                                                    bool OrLocal) {
-  if (!EnableTBAA)
-    return AliasAnalysis::pointsToConstantMemory(Loc, OrLocal);
+char TypeBasedAAWrapperPass::ID = 0;
+INITIALIZE_PASS(TypeBasedAAWrapperPass, "tbaa", "Type-Based Alias Analysis",
+                false, true)
 
-  const MDNode *M = Loc.AATags.TBAA;
-  if (!M)
-    return AliasAnalysis::pointsToConstantMemory(Loc, OrLocal);
-
-  // If this is an "immutable" type, we can assume the pointer is pointing
-  // to constant memory.
-  if ((!isStructPathTBAA(M) && TBAANode(M).TypeIsImmutable()) ||
-      (isStructPathTBAA(M) && TBAAStructTagNode(M).TypeIsImmutable()))
-    return true;
-
-  return AliasAnalysis::pointsToConstantMemory(Loc, OrLocal);
+ImmutablePass *llvm::createTypeBasedAAWrapperPass() {
+  return new TypeBasedAAWrapperPass();
 }
 
-FunctionModRefBehavior
-TypeBasedAliasAnalysis::getModRefBehavior(ImmutableCallSite CS) {
-  if (!EnableTBAA)
-    return AliasAnalysis::getModRefBehavior(CS);
-
-  FunctionModRefBehavior Min = FMRB_UnknownModRefBehavior;
-
-  // If this is an "immutable" type, we can assume the call doesn't write
-  // to memory.
-  if (const MDNode *M = CS.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
-    if ((!isStructPathTBAA(M) && TBAANode(M).TypeIsImmutable()) ||
-        (isStructPathTBAA(M) && TBAAStructTagNode(M).TypeIsImmutable()))
-      Min = FMRB_OnlyReadsMemory;
-
-  return FunctionModRefBehavior(AliasAnalysis::getModRefBehavior(CS) & Min);
+TypeBasedAAWrapperPass::TypeBasedAAWrapperPass() : ImmutablePass(ID) {
+  initializeTypeBasedAAWrapperPassPass(*PassRegistry::getPassRegistry());
 }
 
-FunctionModRefBehavior
-TypeBasedAliasAnalysis::getModRefBehavior(const Function *F) {
-  // Functions don't have metadata. Just chain to the next implementation.
-  return AliasAnalysis::getModRefBehavior(F);
-}
-
-ModRefInfo TypeBasedAliasAnalysis::getModRefInfo(ImmutableCallSite CS,
-                                                 const MemoryLocation &Loc) {
-  if (!EnableTBAA)
-    return AliasAnalysis::getModRefInfo(CS, Loc);
-
-  if (const MDNode *L = Loc.AATags.TBAA)
-    if (const MDNode *M =
-            CS.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
-      if (!Aliases(L, M))
-        return MRI_NoModRef;
-
-  return AliasAnalysis::getModRefInfo(CS, Loc);
-}
-
-ModRefInfo TypeBasedAliasAnalysis::getModRefInfo(ImmutableCallSite CS1,
-                                                 ImmutableCallSite CS2) {
-  if (!EnableTBAA)
-    return AliasAnalysis::getModRefInfo(CS1, CS2);
-
-  if (const MDNode *M1 =
-          CS1.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
-    if (const MDNode *M2 =
-            CS2.getInstruction()->getMetadata(LLVMContext::MD_tbaa))
-      if (!Aliases(M1, M2))
-        return MRI_NoModRef;
-
-  return AliasAnalysis::getModRefInfo(CS1, CS2);
-}
-
-bool MDNode::isTBAAVtableAccess() const {
-  if (!isStructPathTBAA(this)) {
-    if (getNumOperands() < 1)
-      return false;
-    if (MDString *Tag1 = dyn_cast<MDString>(getOperand(0))) {
-      if (Tag1->getString() == "vtable pointer")
-        return true;
-    }
-    return false;
-  }
-
-  // For struct-path aware TBAA, we use the access type of the tag.
-  if (getNumOperands() < 2)
-    return false;
-  MDNode *Tag = cast_or_null<MDNode>(getOperand(1));
-  if (!Tag)
-    return false;
-  if (MDString *Tag1 = dyn_cast<MDString>(Tag->getOperand(0))) {
-    if (Tag1->getString() == "vtable pointer")
-      return true;
-  }
+bool TypeBasedAAWrapperPass::doInitialization(Module &M) {
+  Result.reset(new TypeBasedAAResult());
   return false;
 }
 
-MDNode *MDNode::getMostGenericTBAA(MDNode *A, MDNode *B) {
-  if (!A || !B)
-    return nullptr;
-
-  if (A == B)
-    return A;
-
-  // For struct-path aware TBAA, we use the access type of the tag.
-  bool StructPath = isStructPathTBAA(A) && isStructPathTBAA(B);
-  if (StructPath) {
-    A = cast_or_null<MDNode>(A->getOperand(1));
-    if (!A)
-      return nullptr;
-    B = cast_or_null<MDNode>(B->getOperand(1));
-    if (!B)
-      return nullptr;
-  }
-
-  SmallSetVector<MDNode *, 4> PathA;
-  MDNode *T = A;
-  while (T) {
-    if (PathA.count(T))
-      report_fatal_error("Cycle found in TBAA metadata.");
-    PathA.insert(T);
-    T = T->getNumOperands() >= 2 ? cast_or_null<MDNode>(T->getOperand(1))
-                                 : nullptr;
-  }
-
-  SmallSetVector<MDNode *, 4> PathB;
-  T = B;
-  while (T) {
-    if (PathB.count(T))
-      report_fatal_error("Cycle found in TBAA metadata.");
-    PathB.insert(T);
-    T = T->getNumOperands() >= 2 ? cast_or_null<MDNode>(T->getOperand(1))
-                                 : nullptr;
-  }
-
-  int IA = PathA.size() - 1;
-  int IB = PathB.size() - 1;
-
-  MDNode *Ret = nullptr;
-  while (IA >= 0 && IB >= 0) {
-    if (PathA[IA] == PathB[IB])
-      Ret = PathA[IA];
-    else
-      break;
-    --IA;
-    --IB;
-  }
-  if (!StructPath)
-    return Ret;
-
-  if (!Ret)
-    return nullptr;
-  // We need to convert from a type node to a tag node.
-  Type *Int64 = IntegerType::get(A->getContext(), 64);
-  Metadata *Ops[3] = {Ret, Ret,
-                      ConstantAsMetadata::get(ConstantInt::get(Int64, 0))};
-  return MDNode::get(A->getContext(), Ops);
+bool TypeBasedAAWrapperPass::doFinalization(Module &M) {
+  Result.reset();
+  return false;
 }
 
-void Instruction::getAAMetadata(AAMDNodes &N, bool Merge) const {
-  if (Merge)
-    N.TBAA =
-        MDNode::getMostGenericTBAA(N.TBAA, getMetadata(LLVMContext::MD_tbaa));
-  else
-    N.TBAA = getMetadata(LLVMContext::MD_tbaa);
-
-  if (Merge)
-    N.Scope = MDNode::getMostGenericAliasScope(
-        N.Scope, getMetadata(LLVMContext::MD_alias_scope));
-  else
-    N.Scope = getMetadata(LLVMContext::MD_alias_scope);
-
-  if (Merge)
-    N.NoAlias =
-        MDNode::intersect(N.NoAlias, getMetadata(LLVMContext::MD_noalias));
-  else
-    N.NoAlias = getMetadata(LLVMContext::MD_noalias);
+void TypeBasedAAWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
+  AU.setPreservesAll();
 }
-

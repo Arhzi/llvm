@@ -22,6 +22,7 @@
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Analysis/VectorUtils.h"
 
 namespace llvm {
 
@@ -61,6 +62,14 @@ public:
       // Otherwise, the default basic cost is used.
       return TTI::TCC_Basic;
 
+    case Instruction::FDiv:
+    case Instruction::FRem:
+    case Instruction::SDiv:
+    case Instruction::SRem:
+    case Instruction::UDiv:
+    case Instruction::URem:
+      return TTI::TCC_Expensive;
+
     case Instruction::IntToPtr: {
       // An inttoptr cast is free so long as the input is a legal integer type
       // which doesn't contain values outside the range of a pointer.
@@ -93,8 +102,8 @@ public:
     }
   }
 
-  unsigned getGEPCost(Type *PointeeType, const Value *Ptr,
-                      ArrayRef<const Value *> Operands) {
+  int getGEPCost(Type *PointeeType, const Value *Ptr,
+                 ArrayRef<const Value *> Operands) {
     // In the basic model, we just assume that all-constant GEPs will be folded
     // into their uses via addressing modes.
     for (unsigned Idx = 0, Size = Operands.size(); Idx != Size; ++Idx)
@@ -119,6 +128,8 @@ public:
     return TTI::TCC_Basic * (NumArgs + 1);
   }
 
+  unsigned getInliningThresholdMultiplier() { return 1; }
+
   unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
                             ArrayRef<Type *> ParamTys) {
     switch (IID) {
@@ -139,11 +150,17 @@ public:
     case Intrinsic::objectsize:
     case Intrinsic::ptr_annotation:
     case Intrinsic::var_annotation:
-    case Intrinsic::experimental_gc_result_int:
-    case Intrinsic::experimental_gc_result_float:
-    case Intrinsic::experimental_gc_result_ptr:
     case Intrinsic::experimental_gc_result:
     case Intrinsic::experimental_gc_relocate:
+    case Intrinsic::coro_alloc:
+    case Intrinsic::coro_begin:
+    case Intrinsic::coro_free:
+    case Intrinsic::coro_end:
+    case Intrinsic::coro_frame:
+    case Intrinsic::coro_size:
+    case Intrinsic::coro_suspend:
+    case Intrinsic::coro_param:
+    case Intrinsic::coro_subfn_addr:
       // These intrinsics don't actually represent code after lowering.
       return TTI::TCC_Free;
     }
@@ -201,9 +218,13 @@ public:
     return !BaseGV && BaseOffset == 0 && (Scale == 0 || Scale == 1);
   }
 
-  bool isLegalMaskedStore(Type *DataType, int Consecutive) { return false; }
+  bool isLegalMaskedStore(Type *DataType) { return false; }
 
-  bool isLegalMaskedLoad(Type *DataType, int Consecutive) { return false; }
+  bool isLegalMaskedLoad(Type *DataType) { return false; }
+
+  bool isLegalMaskedScatter(Type *DataType) { return false; }
+
+  bool isLegalMaskedGather(Type *DataType) { return false; }
 
   int getScalingFactorCost(Type *Ty, GlobalValue *BaseGV, int64_t BaseOffset,
                            bool HasBaseReg, int64_t Scale, unsigned AddrSpace) {
@@ -214,9 +235,9 @@ public:
     return -1;
   }
 
-  bool isTruncateFree(Type *Ty1, Type *Ty2) { return false; }
+  bool isFoldableMemAccessOffset(Instruction *I, int64_t Offset) { return true; }
 
-  bool isZExtFree(Type *Ty1, Type *Ty2) { return false; }
+  bool isTruncateFree(Type *Ty1, Type *Ty2) { return false; }
 
   bool isProfitableToHoist(Instruction *I) { return true; }
 
@@ -227,10 +248,19 @@ public:
   unsigned getJumpBufSize() { return 0; }
 
   bool shouldBuildLookupTables() { return true; }
+  bool shouldBuildLookupTablesForConstant(Constant *C) { return true; }
 
   bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
 
   bool enableInterleavedAccessVectorization() { return false; }
+
+  bool isFPVectorizationPotentiallyUnsafe() { return false; }
+
+  bool allowsMisalignedMemoryAccesses(LLVMContext &Context,
+                                      unsigned BitWidth,
+                                      unsigned AddressSpace,
+                                      unsigned Alignment,
+                                      bool *Fast) { return false; }
 
   TTI::PopcntSupportKind getPopcntSupport(unsigned IntTyWidthInBit) {
     return TTI::PSK_Software;
@@ -239,6 +269,11 @@ public:
   bool haveFastSqrt(Type *Ty) { return false; }
 
   unsigned getFPOpCost(Type *Ty) { return TargetTransformInfo::TCC_Basic; }
+
+  int getIntImmCodeSizeCost(unsigned Opcode, unsigned Idx, const APInt &Imm,
+                            Type *Ty) {
+    return 0;
+  }
 
   unsigned getIntImmCost(const APInt &Imm, Type *Ty) { return TTI::TCC_Basic; }
 
@@ -256,6 +291,14 @@ public:
 
   unsigned getRegisterBitWidth(bool Vector) { return 32; }
 
+  unsigned getCacheLineSize() { return 0; }
+
+  unsigned getPrefetchDistance() { return 0; }
+
+  unsigned getMinPrefetchStride() { return 1; }
+
+  unsigned getMaxPrefetchIterationsAhead() { return UINT_MAX; }
+
   unsigned getMaxInterleaveFactor(unsigned VF) { return 1; }
 
   unsigned getArithmeticInstrCost(unsigned Opcode, Type *Ty,
@@ -272,6 +315,11 @@ public:
   }
 
   unsigned getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src) { return 1; }
+
+  unsigned getExtractWithExtendCost(unsigned Opcode, Type *Dst,
+                                    VectorType *VecTy, unsigned Index) {
+    return 1;
+  }
 
   unsigned getCFInstrCost(unsigned Opcode) { return 1; }
 
@@ -293,6 +341,12 @@ public:
     return 1;
   }
 
+  unsigned getGatherScatterOpCost(unsigned Opcode, Type *DataTy, Value *Ptr,
+                                  bool VariableMask,
+                                  unsigned Alignment) {
+    return 1;
+  }
+
   unsigned getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
                                       unsigned Factor,
                                       ArrayRef<unsigned> Indices,
@@ -302,7 +356,11 @@ public:
   }
 
   unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
-                                 ArrayRef<Type *> Tys) {
+                                 ArrayRef<Type *> Tys, FastMathFlags FMF) {
+    return 1;
+  }
+  unsigned getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
+                                 ArrayRef<Value *> Args, FastMathFlags FMF) {
     return 1;
   }
 
@@ -334,6 +392,36 @@ public:
            (Caller->getFnAttribute("target-features") ==
             Callee->getFnAttribute("target-features"));
   }
+
+  unsigned getLoadStoreVecRegBitWidth(unsigned AddrSpace) const { return 128; }
+
+  bool isLegalToVectorizeLoad(LoadInst *LI) const { return true; }
+
+  bool isLegalToVectorizeStore(StoreInst *SI) const { return true; }
+
+  bool isLegalToVectorizeLoadChain(unsigned ChainSizeInBytes,
+                                   unsigned Alignment,
+                                   unsigned AddrSpace) const {
+    return true;
+  }
+
+  bool isLegalToVectorizeStoreChain(unsigned ChainSizeInBytes,
+                                    unsigned Alignment,
+                                    unsigned AddrSpace) const {
+    return true;
+  }
+
+  unsigned getLoadVectorFactor(unsigned VF, unsigned LoadSize,
+                               unsigned ChainSizeInBytes,
+                               VectorType *VecTy) const {
+    return VF;
+  }
+
+  unsigned getStoreVectorFactor(unsigned VF, unsigned StoreSize,
+                                unsigned ChainSizeInBytes,
+                                VectorType *VecTy) const {
+    return VF;
+  }
 };
 
 /// \brief CRTP base class for use as a mix-in that aids implementing
@@ -347,12 +435,6 @@ protected:
   explicit TargetTransformInfoImplCRTPBase(const DataLayout &DL) : BaseT(DL) {}
 
 public:
-  // Provide value semantics. MSVC requires that we spell all of these out.
-  TargetTransformInfoImplCRTPBase(const TargetTransformInfoImplCRTPBase &Arg)
-      : BaseT(static_cast<const BaseT &>(Arg)) {}
-  TargetTransformInfoImplCRTPBase(TargetTransformInfoImplCRTPBase &&Arg)
-      : BaseT(std::move(static_cast<BaseT &>(Arg))) {}
-
   using BaseT::getCallCost;
 
   unsigned getCallCost(const Function *F, int NumArgs) {
@@ -386,8 +468,8 @@ public:
 
   using BaseT::getGEPCost;
 
-  unsigned getGEPCost(Type *PointeeType, const Value *Ptr,
-                      ArrayRef<const Value *> Operands) {
+  int getGEPCost(Type *PointeeType, const Value *Ptr,
+                 ArrayRef<const Value *> Operands) {
     const GlobalValue *BaseGV = nullptr;
     if (Ptr != nullptr) {
       // TODO: will remove this when pointers have an opaque type.
@@ -400,35 +482,42 @@ public:
     int64_t BaseOffset = 0;
     int64_t Scale = 0;
 
-    // Assumes the address space is 0 when Ptr is nullptr.
-    unsigned AS =
-        (Ptr == nullptr ? 0 : Ptr->getType()->getPointerAddressSpace());
-    auto GTI = gep_type_begin(PointerType::get(PointeeType, AS), Operands);
+    auto GTI = gep_type_begin(PointeeType, Operands);
+    Type *TargetType;
     for (auto I = Operands.begin(); I != Operands.end(); ++I, ++GTI) {
-      if (isa<SequentialType>(*GTI)) {
+      TargetType = GTI.getIndexedType();
+      // We assume that the cost of Scalar GEP with constant index and the
+      // cost of Vector GEP with splat constant index are the same.
+      const ConstantInt *ConstIdx = dyn_cast<ConstantInt>(*I);
+      if (!ConstIdx)
+        if (auto Splat = getSplatValue(*I))
+          ConstIdx = dyn_cast<ConstantInt>(Splat);
+      if (StructType *STy = GTI.getStructTypeOrNull()) {
+        // For structures the index is always splat or scalar constant
+        assert(ConstIdx && "Unexpected GEP index");
+        uint64_t Field = ConstIdx->getZExtValue();
+        BaseOffset += DL.getStructLayout(STy)->getElementOffset(Field);
+      } else {
         int64_t ElementSize = DL.getTypeAllocSize(GTI.getIndexedType());
-        if (const ConstantInt *ConstIdx = dyn_cast<ConstantInt>(*I)) {
+        if (ConstIdx)
           BaseOffset += ConstIdx->getSExtValue() * ElementSize;
-        } else {
+        else {
           // Needs scale register.
-          if (Scale != 0) {
+          if (Scale != 0)
             // No addressing mode takes two scale registers.
             return TTI::TCC_Basic;
-          }
           Scale = ElementSize;
         }
-      } else {
-        StructType *STy = cast<StructType>(*GTI);
-        uint64_t Field = cast<ConstantInt>(*I)->getZExtValue();
-        BaseOffset += DL.getStructLayout(STy)->getElementOffset(Field);
       }
     }
 
+    // Assumes the address space is 0 when Ptr is nullptr.
+    unsigned AS =
+        (Ptr == nullptr ? 0 : Ptr->getType()->getPointerAddressSpace());
     if (static_cast<T *>(this)->isLegalAddressingMode(
-            PointerType::get(*GTI, AS), const_cast<GlobalValue *>(BaseGV),
-            BaseOffset, HasBaseReg, Scale, AS)) {
+            TargetType, const_cast<GlobalValue *>(BaseGV), BaseOffset,
+            HasBaseReg, Scale, AS))
       return TTI::TCC_Free;
-    }
     return TTI::TCC_Basic;
   }
 

@@ -14,7 +14,6 @@
 #ifndef LLVM_SUPPORT_ONDISKHASHTABLE_H
 #define LLVM_SUPPORT_ONDISKHASHTABLE_H
 
-#include "llvm/Support/AlignOf.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/EndianStream.h"
@@ -53,6 +52,8 @@ namespace llvm {
 ///   /// Write Data to Out.  DataLen is the length from EmitKeyDataLength.
 ///   static void EmitData(raw_ostream &Out, key_type_ref Key,
 ///                        data_type_ref Data, offset_type DataLen);
+///   /// Determine if two keys are equal. Optional, only needed by contains.
+///   static bool EqualKey(key_type_ref Key1, key_type_ref Key2);
 /// };
 /// \endcode
 template <typename Info> class OnDiskChainedHashTableGenerator {
@@ -122,11 +123,19 @@ public:
   /// Uses the provided Info instead of a stack allocated one.
   void insert(typename Info::key_type_ref Key,
               typename Info::data_type_ref Data, Info &InfoObj) {
-
     ++NumEntries;
     if (4 * NumEntries >= 3 * NumBuckets)
       resize(NumBuckets * 2);
     insert(Buckets, NumBuckets, new (BA.Allocate()) Item(Key, Data, InfoObj));
+  }
+
+  /// \brief Determine whether an entry has been inserted.
+  bool contains(typename Info::key_type_ref Key, Info &InfoObj) {
+    unsigned Hash = InfoObj.ComputeHash(Key);
+    for (Item *I = Buckets[Hash & (NumBuckets - 1)].Head; I; I = I->Next)
+      if (I->Hash == Hash && InfoObj.EqualKey(I->Key, Key))
+        return true;
+    return false;
   }
 
   /// \brief Emit the table to Out, which must not be at offset 0.
@@ -141,6 +150,22 @@ public:
   offset_type Emit(raw_ostream &Out, Info &InfoObj) {
     using namespace llvm::support;
     endian::Writer<little> LE(Out);
+
+    // Now we're done adding entries, resize the bucket list if it's
+    // significantly too large. (This only happens if the number of
+    // entries is small and we're within our initial allocation of
+    // 64 buckets.) We aim for an occupancy ratio in [3/8, 3/4).
+    //
+    // As a special case, if there are two or fewer entries, just
+    // form a single bucket. A linear scan is fine in that case, and
+    // this is very common in C++ class lookup tables. This also
+    // guarantees we produce at least one bucket for an empty table.
+    //
+    // FIXME: Try computing a perfect hash function at this point.
+    unsigned TargetNumBuckets =
+        NumEntries <= 2 ? 1 : NextPowerOf2(NumEntries * 4 / 3);
+    if (TargetNumBuckets != NumBuckets)
+      resize(TargetNumBuckets);
 
     // Emit the payload of the table.
     for (offset_type I = 0; I < NumBuckets; ++I) {
@@ -161,14 +186,28 @@ public:
         LE.write<typename Info::hash_value_type>(I->Hash);
         const std::pair<offset_type, offset_type> &Len =
             InfoObj.EmitKeyDataLength(Out, I->Key, I->Data);
+#ifdef NDEBUG
         InfoObj.EmitKey(Out, I->Key, Len.first);
         InfoObj.EmitData(Out, I->Key, I->Data, Len.second);
+#else
+        // In asserts mode, check that the users length matches the data they
+        // wrote.
+        uint64_t KeyStart = Out.tell();
+        InfoObj.EmitKey(Out, I->Key, Len.first);
+        uint64_t DataStart = Out.tell();
+        InfoObj.EmitData(Out, I->Key, I->Data, Len.second);
+        uint64_t End = Out.tell();
+        assert(offset_type(DataStart - KeyStart) == Len.first &&
+               "key length does not match bytes written");
+        assert(offset_type(End - DataStart) == Len.second &&
+               "data length does not match bytes written");
+#endif
       }
     }
 
     // Pad with zeros so that we can start the hashtable at an aligned address.
     offset_type TableOff = Out.tell();
-    uint64_t N = llvm::OffsetToAlignment(TableOff, alignOf<offset_type>());
+    uint64_t N = llvm::OffsetToAlignment(TableOff, alignof(offset_type));
     TableOff += N;
     while (N--)
       LE.write<uint8_t>(0);
@@ -239,11 +278,12 @@ template <typename Info> class OnDiskChainedHashTable {
   Info InfoObj;
 
 public:
+  typedef Info InfoType;
   typedef typename Info::internal_key_type internal_key_type;
   typedef typename Info::external_key_type external_key_type;
-  typedef typename Info::data_type         data_type;
-  typedef typename Info::hash_value_type   hash_value_type;
-  typedef typename Info::offset_type       offset_type;
+  typedef typename Info::data_type data_type;
+  typedef typename Info::hash_value_type hash_value_type;
+  typedef typename Info::offset_type offset_type;
 
   OnDiskChainedHashTable(offset_type NumBuckets, offset_type NumEntries,
                          const unsigned char *Buckets,
@@ -284,12 +324,16 @@ public:
     Info *InfoObj;
 
   public:
-    iterator() : Data(nullptr), Len(0) {}
+    iterator() : Key(), Data(nullptr), Len(0), InfoObj(nullptr) {}
     iterator(const internal_key_type K, const unsigned char *D, offset_type L,
              Info *InfoObj)
         : Key(K), Data(D), Len(L), InfoObj(InfoObj) {}
 
     data_type operator*() const { return InfoObj->ReadData(Key, Data, Len); }
+
+    const unsigned char *getDataPtr() const { return Data; }
+    offset_type getDataLen() const { return Len; }
+
     bool operator==(const iterator &X) const { return X.Data == Data; }
     bool operator!=(const iterator &X) const { return X.Data != Data; }
   };

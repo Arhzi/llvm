@@ -37,16 +37,9 @@ class PPCTTIImpl : public BasicTTIImplBase<PPCTTIImpl> {
   const PPCTargetLowering *getTLI() const { return TLI; }
 
 public:
-  explicit PPCTTIImpl(const PPCTargetMachine *TM, Function &F)
+  explicit PPCTTIImpl(const PPCTargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
-
-  // Provide value semantics. MSVC requires that we spell all of these out.
-  PPCTTIImpl(const PPCTTIImpl &Arg)
-      : BaseT(static_cast<const BaseT &>(Arg)), ST(Arg.ST), TLI(Arg.TLI) {}
-  PPCTTIImpl(PPCTTIImpl &&Arg)
-      : BaseT(std::move(static_cast<BaseT &>(Arg))), ST(std::move(Arg.ST)),
-        TLI(std::move(Arg.TLI)) {}
 
   /// \name Scalar TTI Implementations
   /// @{
@@ -67,8 +60,11 @@ public:
   /// @{
 
   bool enableAggressiveInterleaving(bool LoopHasReductions);
+  bool enableInterleavedAccessVectorization();
   unsigned getNumberOfRegisters(bool Vector);
   unsigned getRegisterBitWidth(bool Vector);
+  unsigned getCacheLineSize();
+  unsigned getPrefetchDistance();
   unsigned getMaxInterleaveFactor(unsigned VF);
   int getArithmeticInstrCost(
       unsigned Opcode, Type *Ty,
@@ -82,6 +78,11 @@ public:
   int getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index);
   int getMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
                       unsigned AddressSpace);
+  int getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
+                                 unsigned Factor,
+                                 ArrayRef<unsigned> Indices,
+                                 unsigned Alignment,
+                                 unsigned AddressSpace);
 
   /// @}
 };

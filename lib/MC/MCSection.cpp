@@ -21,7 +21,7 @@ using namespace llvm;
 
 MCSection::MCSection(SectionVariant V, SectionKind K, MCSymbol *Begin)
     : Begin(Begin), BundleGroupBeforeFirstInst(false), HasInstructions(false),
-      IsRegistered(false), Variant(V), Kind(K) {}
+      IsRegistered(false), DummyFragment(this), Variant(V), Kind(K) {}
 
 MCSymbol *MCSection::getEndSymbol(MCContext &Ctx) {
   if (!End)
@@ -72,7 +72,7 @@ MCSection::getSubsectionInsertionPoint(unsigned Subsection) {
   if (MI == SubsectionFragmentMap.end())
     IP = end();
   else
-    IP = MI->second;
+    IP = MI->second->getIterator();
   if (!ExactMatch && Subsection != 0) {
     // The GNU as documentation claims that subsections have an alignment of 4,
     // although this appears not to be the case.
@@ -85,8 +85,7 @@ MCSection::getSubsectionInsertionPoint(unsigned Subsection) {
   return IP;
 }
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-void MCSection::dump() {
+LLVM_DUMP_METHOD void MCSection::dump() {
   raw_ostream &OS = llvm::errs();
 
   OS << "<MCSection";
@@ -98,12 +97,3 @@ void MCSection::dump() {
   }
   OS << "]>";
 }
-#endif
-
-MCSection::iterator MCSection::begin() { return Fragments.begin(); }
-
-MCSection::iterator MCSection::end() { return Fragments.end(); }
-
-MCSection::reverse_iterator MCSection::rbegin() { return Fragments.rbegin(); }
-
-MCSection::reverse_iterator MCSection::rend() { return Fragments.rend(); }

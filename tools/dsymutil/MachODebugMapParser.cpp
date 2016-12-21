@@ -10,6 +10,7 @@
 #include "BinaryHolder.h"
 #include "DebugMap.h"
 #include "dsymutil.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -34,6 +35,9 @@ public:
   /// or isn't of a supported type.
   ErrorOr<std::vector<std::unique_ptr<DebugMap>>> parse();
 
+  /// Walk the symbol table and dump it.
+  bool dumpStab();
+
 private:
   std::string BinaryPath;
   SmallVector<StringRef, 1> Archs;
@@ -50,7 +54,7 @@ private:
   /// Owns the MemoryBuffer for the currently handled object file.
   BinaryHolder CurrentObjectHolder;
   /// Map of the currently processed object file symbol addresses.
-  StringMap<uint64_t> CurrentObjectAddresses;
+  StringMap<Optional<uint64_t>> CurrentObjectAddresses;
   /// Element of the debug map corresponfing to the current object file.
   DebugMapObject *CurrentDebugMapObject;
 
@@ -61,7 +65,9 @@ private:
   std::unique_ptr<DebugMap> parseOneBinary(const MachOObjectFile &MainBinary,
                                            StringRef BinaryPath);
 
-  void switchToNewDebugMapObject(StringRef Filename, sys::TimeValue Timestamp);
+  void
+  switchToNewDebugMapObject(StringRef Filename,
+                            sys::TimePoint<std::chrono::seconds> Timestamp);
   void resetParserState();
   uint64_t getMainBinarySymbolAddress(StringRef Name);
   void loadMainBinarySymbols(const MachOObjectFile &MainBinary);
@@ -74,10 +80,26 @@ private:
     handleStabSymbolTableEntry(STE.n_strx, STE.n_type, STE.n_sect, STE.n_desc,
                                STE.n_value);
   }
+
+  /// Dump the symbol table output header.
+  void dumpSymTabHeader(raw_ostream &OS, StringRef Arch);
+
+  /// Dump the contents of nlist entries.
+  void dumpSymTabEntry(raw_ostream &OS, uint64_t Index, uint32_t StringIndex,
+                       uint8_t Type, uint8_t SectionIndex, uint16_t Flags,
+                       uint64_t Value);
+
+  template <typename STEType>
+  void dumpSymTabEntry(raw_ostream &OS, uint64_t Index, const STEType &STE) {
+    dumpSymTabEntry(OS, Index, STE.n_strx, STE.n_type, STE.n_sect, STE.n_desc,
+                    STE.n_value);
+  }
+  void dumpOneBinaryStab(const MachOObjectFile &MainBinary,
+                         StringRef BinaryPath);
 };
 
 static void Warning(const Twine &Msg) { errs() << "warning: " + Msg + "\n"; }
-}
+} // anonymous namespace
 
 /// Reset the parser state coresponding to the current object
 /// file. This is to be called after an object file is finished
@@ -90,8 +112,8 @@ void MachODebugMapParser::resetParserState() {
 /// Create a new DebugMapObject. This function resets the state of the
 /// parser that was referring to the last object file and sets
 /// everything up to add symbols to the new one.
-void MachODebugMapParser::switchToNewDebugMapObject(StringRef Filename,
-                                                    sys::TimeValue Timestamp) {
+void MachODebugMapParser::switchToNewDebugMapObject(
+    StringRef Filename, sys::TimePoint<std::chrono::seconds> Timestamp) {
   resetParserState();
 
   SmallString<80> Path(PathPrefix);
@@ -116,12 +138,16 @@ void MachODebugMapParser::switchToNewDebugMapObject(StringRef Filename,
   loadCurrentObjectFileSymbols(*ErrOrAchObj);
 }
 
+static std::string getArchName(const object::MachOObjectFile &Obj) {
+  Triple T = Obj.getArchTriple();
+  return T.getArchName();
+}
+
 std::unique_ptr<DebugMap>
 MachODebugMapParser::parseOneBinary(const MachOObjectFile &MainBinary,
                                     StringRef BinaryPath) {
   loadMainBinarySymbols(MainBinary);
-  Result =
-      make_unique<DebugMap>(BinaryHolder::getTriple(MainBinary), BinaryPath);
+  Result = make_unique<DebugMap>(MainBinary.getArchTriple(), BinaryPath);
   MainBinaryStrings = MainBinary.getStringTableData();
   for (const SymbolRef &Symbol : MainBinary.symbols()) {
     const DataRefImpl &DRI = Symbol.getRawDataRefImpl();
@@ -135,17 +161,159 @@ MachODebugMapParser::parseOneBinary(const MachOObjectFile &MainBinary,
   return std::move(Result);
 }
 
+// Table that maps Darwin's Mach-O stab constants to strings to allow printing.
+// llvm-nm has very similar code, the strings used here are however slightly
+// different and part of the interface of dsymutil (some project's build-systems
+// parse the ouptut of dsymutil -s), thus they shouldn't be changed.
+struct DarwinStabName {
+  uint8_t NType;
+  const char *Name;
+};
+
+static const struct DarwinStabName DarwinStabNames[] = {
+    {MachO::N_GSYM, "N_GSYM"},    {MachO::N_FNAME, "N_FNAME"},
+    {MachO::N_FUN, "N_FUN"},      {MachO::N_STSYM, "N_STSYM"},
+    {MachO::N_LCSYM, "N_LCSYM"},  {MachO::N_BNSYM, "N_BNSYM"},
+    {MachO::N_PC, "N_PC"},        {MachO::N_AST, "N_AST"},
+    {MachO::N_OPT, "N_OPT"},      {MachO::N_RSYM, "N_RSYM"},
+    {MachO::N_SLINE, "N_SLINE"},  {MachO::N_ENSYM, "N_ENSYM"},
+    {MachO::N_SSYM, "N_SSYM"},    {MachO::N_SO, "N_SO"},
+    {MachO::N_OSO, "N_OSO"},      {MachO::N_LSYM, "N_LSYM"},
+    {MachO::N_BINCL, "N_BINCL"},  {MachO::N_SOL, "N_SOL"},
+    {MachO::N_PARAMS, "N_PARAM"}, {MachO::N_VERSION, "N_VERS"},
+    {MachO::N_OLEVEL, "N_OLEV"},  {MachO::N_PSYM, "N_PSYM"},
+    {MachO::N_EINCL, "N_EINCL"},  {MachO::N_ENTRY, "N_ENTRY"},
+    {MachO::N_LBRAC, "N_LBRAC"},  {MachO::N_EXCL, "N_EXCL"},
+    {MachO::N_RBRAC, "N_RBRAC"},  {MachO::N_BCOMM, "N_BCOMM"},
+    {MachO::N_ECOMM, "N_ECOMM"},  {MachO::N_ECOML, "N_ECOML"},
+    {MachO::N_LENG, "N_LENG"},    {0, nullptr}};
+
+static const char *getDarwinStabString(uint8_t NType) {
+  for (unsigned i = 0; DarwinStabNames[i].Name; i++) {
+    if (DarwinStabNames[i].NType == NType)
+      return DarwinStabNames[i].Name;
+  }
+  return nullptr;
+}
+
+void MachODebugMapParser::dumpSymTabHeader(raw_ostream &OS, StringRef Arch) {
+  OS << "-----------------------------------"
+        "-----------------------------------\n";
+  OS << "Symbol table for: '" << BinaryPath << "' (" << Arch.data() << ")\n";
+  OS << "-----------------------------------"
+        "-----------------------------------\n";
+  OS << "Index    n_strx   n_type             n_sect n_desc n_value\n";
+  OS << "======== -------- ------------------ ------ ------ ----------------\n";
+}
+
+void MachODebugMapParser::dumpSymTabEntry(raw_ostream &OS, uint64_t Index,
+                                          uint32_t StringIndex, uint8_t Type,
+                                          uint8_t SectionIndex, uint16_t Flags,
+                                          uint64_t Value) {
+  // Index
+  OS << '[' << format_decimal(Index, 6) << "] "
+     // n_strx
+     << format_hex_no_prefix(StringIndex, 8) << ' '
+     // n_type...
+     << format_hex_no_prefix(Type, 2) << " (";
+
+  if (Type & MachO::N_STAB)
+    OS << left_justify(getDarwinStabString(Type), 13);
+  else {
+    if (Type & MachO::N_PEXT)
+      OS << "PEXT ";
+    else
+      OS << "     ";
+    switch (Type & MachO::N_TYPE) {
+    case MachO::N_UNDF: // 0x0 undefined, n_sect == NO_SECT
+      OS << "UNDF";
+      break;
+    case MachO::N_ABS: // 0x2 absolute, n_sect == NO_SECT
+      OS << "ABS ";
+      break;
+    case MachO::N_SECT: // 0xe defined in section number n_sect
+      OS << "SECT";
+      break;
+    case MachO::N_PBUD: // 0xc prebound undefined (defined in a dylib)
+      OS << "PBUD";
+      break;
+    case MachO::N_INDR: // 0xa indirect
+      OS << "INDR";
+      break;
+    default:
+      OS << format_hex_no_prefix(Type, 2) << "    ";
+      break;
+    }
+    if (Type & MachO::N_EXT)
+      OS << " EXT";
+    else
+      OS << "    ";
+  }
+
+  OS << ") "
+     // n_sect
+     << format_hex_no_prefix(SectionIndex, 2) << "     "
+     // n_desc
+     << format_hex_no_prefix(Flags, 4) << "   "
+     // n_value
+     << format_hex_no_prefix(Value, 16);
+
+  const char *Name = &MainBinaryStrings.data()[StringIndex];
+  if (Name && Name[0])
+    OS << " '" << Name << "'";
+
+  OS << "\n";
+}
+
+void MachODebugMapParser::dumpOneBinaryStab(const MachOObjectFile &MainBinary,
+                                            StringRef BinaryPath) {
+  loadMainBinarySymbols(MainBinary);
+  MainBinaryStrings = MainBinary.getStringTableData();
+  raw_ostream &OS(llvm::outs());
+
+  dumpSymTabHeader(OS, getArchName(MainBinary));
+  uint64_t Idx = 0;
+  for (const SymbolRef &Symbol : MainBinary.symbols()) {
+    const DataRefImpl &DRI = Symbol.getRawDataRefImpl();
+    if (MainBinary.is64Bit())
+      dumpSymTabEntry(OS, Idx, MainBinary.getSymbol64TableEntry(DRI));
+    else
+      dumpSymTabEntry(OS, Idx, MainBinary.getSymbolTableEntry(DRI));
+    Idx++;
+  }
+
+  OS << "\n\n";
+  resetParserState();
+}
+
 static bool shouldLinkArch(SmallVectorImpl<StringRef> &Archs, StringRef Arch) {
-  if (Archs.empty() ||
-      std::find(Archs.begin(), Archs.end(), "all") != Archs.end() ||
-      std::find(Archs.begin(), Archs.end(), "*") != Archs.end())
+  if (Archs.empty() || is_contained(Archs, "all") || is_contained(Archs, "*"))
     return true;
 
-  if (Arch.startswith("arm") && Arch != "arm64" &&
-      std::find(Archs.begin(), Archs.end(), "arm") != Archs.end())
+  if (Arch.startswith("arm") && Arch != "arm64" && is_contained(Archs, "arm"))
     return true;
 
-  return std::find(Archs.begin(), Archs.end(), Arch) != Archs.end();
+  SmallString<16> ArchName = Arch;
+  if (Arch.startswith("thumb"))
+    ArchName = ("arm" + Arch.substr(5)).str();
+
+  return is_contained(Archs, ArchName);
+}
+
+bool MachODebugMapParser::dumpStab() {
+  auto MainBinOrError =
+      MainBinaryHolder.GetFilesAs<MachOObjectFile>(BinaryPath);
+  if (auto Error = MainBinOrError.getError()) {
+    llvm::errs() << "Cannot get '" << BinaryPath
+                 << "' as MachO file: " << Error.message() << "\n";
+    return false;
+  }
+
+  for (const auto *Binary : *MainBinOrError)
+    if (shouldLinkArch(Archs, Binary->getArchTriple().getArchName()))
+      dumpOneBinaryStab(*Binary, BinaryPath);
+
+  return true;
 }
 
 /// This main parsing routine tries to open the main binary and if
@@ -158,9 +326,8 @@ ErrorOr<std::vector<std::unique_ptr<DebugMap>>> MachODebugMapParser::parse() {
     return Error;
 
   std::vector<std::unique_ptr<DebugMap>> Results;
-  Triple T;
   for (const auto *Binary : *MainBinOrError)
-    if (shouldLinkArch(Archs, Binary->getArch(nullptr, &T).getArchName()))
+    if (shouldLinkArch(Archs, Binary->getArchTriple().getArchName()))
       Results.push_back(parseOneBinary(*Binary, BinaryPath));
 
   return std::move(Results);
@@ -178,11 +345,8 @@ void MachODebugMapParser::handleStabSymbolTableEntry(uint32_t StringIndex,
   const char *Name = &MainBinaryStrings.data()[StringIndex];
 
   // An N_OSO entry represents the start of a new object file description.
-  if (Type == MachO::N_OSO) {
-    sys::TimeValue Timestamp;
-    Timestamp.fromEpochTime(Value);
-    return switchToNewDebugMapObject(Name, Timestamp);
-  }
+  if (Type == MachO::N_OSO)
+    return switchToNewDebugMapObject(Name, sys::toTimePoint(Value));
 
   // If the last N_OSO object file wasn't found,
   // CurrentDebugMapObject will be null. Do not update anything
@@ -234,10 +398,24 @@ void MachODebugMapParser::loadCurrentObjectFileSymbols(
 
   for (auto Sym : Obj.symbols()) {
     uint64_t Addr = Sym.getValue();
-    ErrorOr<StringRef> Name = Sym.getName();
-    if (!Name)
+    Expected<StringRef> Name = Sym.getName();
+    if (!Name) {
+      // TODO: Actually report errors helpfully.
+      consumeError(Name.takeError());
       continue;
-    CurrentObjectAddresses[*Name] = Addr;
+    }
+    // The value of some categories of symbols isn't meaningful. For
+    // example common symbols store their size in the value field, not
+    // their address. Absolute symbols have a fixed address that can
+    // conflict with standard symbols. These symbols (especially the
+    // common ones), might still be referenced by relocations. These
+    // relocations will use the symbol itself, and won't need an
+    // object file address. The object file address field is optional
+    // in the DebugMap, leave it unassigned for these symbols.
+    if (Sym.getFlags() & (SymbolRef::SF_Absolute | SymbolRef::SF_Common))
+      CurrentObjectAddresses[*Name] = None;
+    else
+      CurrentObjectAddresses[*Name] = Addr;
   }
 }
 
@@ -258,9 +436,15 @@ void MachODebugMapParser::loadMainBinarySymbols(
   section_iterator Section = MainBinary.section_end();
   MainBinarySymbolAddresses.clear();
   for (const auto &Sym : MainBinary.symbols()) {
-    SymbolRef::Type Type = Sym.getType();
+    Expected<SymbolRef::Type> TypeOrErr = Sym.getType();
+    if (!TypeOrErr) {
+      // TODO: Actually report errors helpfully.
+      consumeError(TypeOrErr.takeError());
+      continue;
+    }
+    SymbolRef::Type Type = *TypeOrErr;
     // Skip undefined and STAB entries.
-    if ((Type & SymbolRef::ST_Debug) || (Type & SymbolRef::ST_Unknown))
+    if ((Type == SymbolRef::ST_Debug) || (Type == SymbolRef::ST_Unknown))
       continue;
     // The only symbols of interest are the global variables. These
     // are the only ones that need to be queried because the address
@@ -268,16 +452,22 @@ void MachODebugMapParser::loadMainBinarySymbols(
     // addresses should be fetched for the debug map.
     if (!(Sym.getFlags() & SymbolRef::SF_Global))
       continue;
-    ErrorOr<section_iterator> SectionOrErr = Sym.getSection();
-    if (!SectionOrErr)
+    Expected<section_iterator> SectionOrErr = Sym.getSection();
+    if (!SectionOrErr) {
+      // TODO: Actually report errors helpfully.
+      consumeError(SectionOrErr.takeError());
       continue;
+    }
     Section = *SectionOrErr;
     if (Section == MainBinary.section_end() || Section->isText())
       continue;
     uint64_t Addr = Sym.getValue();
-    ErrorOr<StringRef> NameOrErr = Sym.getName();
-    if (!NameOrErr)
+    Expected<StringRef> NameOrErr = Sym.getName();
+    if (!NameOrErr) {
+      // TODO: Actually report errors helpfully.
+      consumeError(NameOrErr.takeError());
       continue;
+    }
     StringRef Name = *NameOrErr;
     if (Name.size() == 0 || Name[0] == '\0')
       continue;
@@ -297,5 +487,11 @@ parseDebugMap(StringRef InputFile, ArrayRef<std::string> Archs,
     return DebugMap::parseYAMLDebugMap(InputFile, PrependPath, Verbose);
   }
 }
+
+bool dumpStab(StringRef InputFile, ArrayRef<std::string> Archs,
+              StringRef PrependPath) {
+  MachODebugMapParser Parser(InputFile, Archs, PrependPath, false);
+  return Parser.dumpStab();
 }
-}
+} // namespace dsymutil
+} // namespace llvm

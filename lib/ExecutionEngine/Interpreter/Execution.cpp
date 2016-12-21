@@ -999,7 +999,7 @@ GenericValue Interpreter::executeGEPOperation(Value *Ptr, gep_type_iterator I,
   uint64_t Total = 0;
 
   for (; I != E; ++I) {
-    if (StructType *STy = dyn_cast<StructType>(*I)) {
+    if (StructType *STy = I.getStructTypeOrNull()) {
       const StructLayout *SLO = getDataLayout().getStructLayout(STy);
 
       const ConstantInt *CPU = cast<ConstantInt>(I.getOperand());
@@ -1007,7 +1007,6 @@ GenericValue Interpreter::executeGEPOperation(Value *Ptr, gep_type_iterator I,
 
       Total += SLO->getElementOffset(Index);
     } else {
-      SequentialType *ST = cast<SequentialType>(*I);
       // Get the index number for the array... which must be long type...
       GenericValue IdxGV = getOperandValue(I.getOperand(), SF);
 
@@ -1020,7 +1019,7 @@ GenericValue Interpreter::executeGEPOperation(Value *Ptr, gep_type_iterator I,
         assert(BitWidth == 64 && "Invalid index type for getelementptr");
         Idx = (int64_t)IdxGV.IntVal.getZExtValue();
       }
-      Total += getDataLayout().getTypeAllocSize(ST->getElementType()) * Idx;
+      Total += getDataLayout().getTypeAllocSize(I.getIndexedType()) * Idx;
     }
   }
 
@@ -2091,7 +2090,7 @@ void Interpreter::callFunction(Function *F, ArrayRef<GenericValue> ArgVals) {
   }
 
   // Get pointers to first LLVM BB & Instruction in function.
-  StackFrame.CurBB     = F->begin();
+  StackFrame.CurBB     = &F->front();
   StackFrame.CurInst   = StackFrame.CurBB->begin();
 
   // Run through the function arguments and initialize their values...
@@ -2103,7 +2102,7 @@ void Interpreter::callFunction(Function *F, ArrayRef<GenericValue> ArgVals) {
   unsigned i = 0;
   for (Function::arg_iterator AI = F->arg_begin(), E = F->arg_end(); 
        AI != E; ++AI, ++i)
-    SetValue(AI, ArgVals[i], StackFrame);
+    SetValue(&*AI, ArgVals[i], StackFrame);
 
   // Handle varargs arguments...
   StackFrame.VarArgs.assign(ArgVals.begin()+i, ArgVals.end());
@@ -2121,27 +2120,5 @@ void Interpreter::run() {
 
     DEBUG(dbgs() << "About to interpret: " << I);
     visit(I);   // Dispatch to one of the visit* methods...
-#if 0
-    // This is not safe, as visiting the instruction could lower it and free I.
-DEBUG(
-    if (!isa<CallInst>(I) && !isa<InvokeInst>(I) && 
-        I.getType() != Type::VoidTy) {
-      dbgs() << "  --> ";
-      const GenericValue &Val = SF.Values[&I];
-      switch (I.getType()->getTypeID()) {
-      default: llvm_unreachable("Invalid GenericValue Type");
-      case Type::VoidTyID:    dbgs() << "void"; break;
-      case Type::FloatTyID:   dbgs() << "float " << Val.FloatVal; break;
-      case Type::DoubleTyID:  dbgs() << "double " << Val.DoubleVal; break;
-      case Type::PointerTyID: dbgs() << "void* " << intptr_t(Val.PointerVal);
-        break;
-      case Type::IntegerTyID: 
-        dbgs() << "i" << Val.IntVal.getBitWidth() << " "
-               << Val.IntVal.toStringUnsigned(10)
-               << " (0x" << Val.IntVal.toStringUnsigned(16) << ")\n";
-        break;
-      }
-    });
-#endif
   }
 }

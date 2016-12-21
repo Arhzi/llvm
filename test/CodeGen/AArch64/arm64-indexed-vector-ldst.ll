@@ -1,4 +1,4 @@
-; RUN: llc -mtriple=arm64-apple-ios7.0 -o - %s | FileCheck %s
+; RUN: llc -mtriple=arm64-apple-ios7.0 -disable-post-ra -o - %s | FileCheck %s
 
 @ptr = global i8* null
 
@@ -6174,11 +6174,10 @@ define <2 x double> @test_v2f64_post_reg_ld1lane(double* %bar, double** %ptr, i6
 }
 
 ; Check for dependencies between the vector and the scalar load.
-define <4 x float> @test_v4f32_post_reg_ld1lane_dep_vec_on_load(float* %bar, float** %ptr, i64 %inc, <4 x float>* %dep_ptr_1, <4 x float>* %dep_ptr_2) {
+define <4 x float> @test_v4f32_post_reg_ld1lane_dep_vec_on_load(float* %bar, float** %ptr, i64 %inc, <4 x float>* %dep_ptr_1, <4 x float>* %dep_ptr_2, <4 x float> %vec) {
 ; CHECK-LABEL: test_v4f32_post_reg_ld1lane_dep_vec_on_load:
 ; CHECK: BB#0:
 ; CHECK-NEXT: ldr s[[LD:[0-9]+]], [x0]
-; CHECK-NEXT: movi.2d v0, #0000000000000000
 ; CHECK-NEXT: str q0, [x3]
 ; CHECK-NEXT: ldr q0, [x4]
 ; CHECK-NEXT: ins.s v0[1], v[[LD]][0]
@@ -6186,7 +6185,7 @@ define <4 x float> @test_v4f32_post_reg_ld1lane_dep_vec_on_load(float* %bar, flo
 ; CHECK-NEXT: str [[POST]], [x1]
 ; CHECK-NEXT: ret
   %tmp1 = load float, float* %bar
-  store <4 x float> zeroinitializer, <4 x float>* %dep_ptr_1, align 16
+  store <4 x float> %vec, <4 x float>* %dep_ptr_1, align 16
   %A = load <4 x float>, <4 x float>* %dep_ptr_2, align 16
   %tmp2 = insertelement <4 x float> %A, float %tmp1, i32 1
   %tmp3 = getelementptr float, float* %bar, i64 %inc
@@ -6215,3 +6214,27 @@ define <4 x i16> @test_v4i16_post_reg_ld1lane_forced_narrow(i16* %bar, i16** %pt
 }
 
 declare <2 x i32> @llvm.ctpop.v2i32(<2 x i32>)
+
+; CHECK-LABEL: test_ld1lane_build:
+; CHECK-DAG: ld1.s { [[REG0:v[0-9]+]] }[0], [x0]
+; CHECK-DAG: ld1.s { [[REG0:v[0-9]+]] }[1], [x1]
+; CHECK-DAG: ld1.s { [[REG1:v[0-9]+]] }[0], [x2]
+; CHECK-DAG: ld1.s { [[REG1:v[0-9]+]] }[1], [x3]
+; CHECK: sub.2s v[[REGNUM2:[0-9]+]], [[REG0]], [[REG1]]
+; CHECK-NEXT: str d[[REGNUM2]], [x4]
+; CHECK-NEXT: ret
+define void @test_ld1lane_build(i32* %ptr0, i32* %ptr1, i32* %ptr2, i32* %ptr3, <2 x i32>* %out) {
+  %load0 = load i32, i32* %ptr0, align 4
+  %load1 = load i32, i32* %ptr1, align 4
+  %vec0_0 = insertelement <2 x i32> undef, i32 %load0, i32 0
+  %vec0_1 = insertelement <2 x i32> %vec0_0, i32 %load1, i32 1
+
+  %load2 = load i32, i32* %ptr2, align 4
+  %load3 = load i32, i32* %ptr3, align 4
+  %vec1_0 = insertelement <2 x i32> undef, i32 %load2, i32 0
+  %vec1_1 = insertelement <2 x i32> %vec1_0, i32 %load3, i32 1
+
+  %sub = sub nsw <2 x i32> %vec0_1, %vec1_1
+  store <2 x i32> %sub, <2 x i32>* %out, align 16
+  ret void
+}

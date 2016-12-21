@@ -188,6 +188,8 @@ public:
     bool lookupAddressRange(uint64_t address, uint64_t size,
                             std::vector<uint32_t> &result) const;
 
+    bool hasFileAtIndex(uint64_t FileIndex) const;
+
     // Extracts filename by its index in filename table in prologue.
     // Returns true on success.
     bool getFileNameByIndex(uint64_t FileIndex, const char *CompDir,
@@ -196,7 +198,7 @@ public:
 
     // Fills the Result argument with the file and line information
     // corresponding to Address. Returns true on success.
-    bool getFileLineInfoForAddress(uint64_t Address, const char *CompDir, 
+    bool getFileLineInfoForAddress(uint64_t Address, const char *CompDir,
                                    DILineInfoSpecifier::FileLineInfoKind Kind,
                                    DILineInfo &Result) const;
 
@@ -247,7 +249,6 @@ private:
   const RelocAddrMap *RelocMap;
   LineTableMapTy LineTableMap;
 };
-
 }
 
 #endif

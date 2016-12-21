@@ -1,3 +1,6 @@
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+
 // Simple test for a fuzzer. The fuzzer must find the interesting switch value.
 #include <cstdint>
 #include <cstdlib>
@@ -17,8 +20,8 @@ bool Switch(const uint8_t *Data, size_t Size) {
     case 101: Sink = __LINE__; break;
     case 1001: Sink = __LINE__; break;
     case 10001: Sink = __LINE__; break;
-    case 100001: Sink = __LINE__; break;
-    case 1000001: Sink = __LINE__; break;
+//    case 100001: Sink = __LINE__; break;
+//    case 1000001: Sink = __LINE__; break;
     case 10000001: Sink = __LINE__; break;
     case 100000001: return true;
   }
@@ -42,7 +45,7 @@ bool ShortSwitch(const uint8_t *Data, size_t Size) {
   return false;
 }
 
-extern "C" void LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
   if (Size >= 4  && Switch<int>(Data, Size) &&
       Size >= 12 && Switch<uint64_t>(Data + 4, Size - 4) &&
       Size >= 14 && ShortSwitch(Data + 12, 2)
@@ -50,5 +53,6 @@ extern "C" void LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
     fprintf(stderr, "BINGO; Found the target, exiting\n");
     exit(1);
   }
+  return 0;
 }
 

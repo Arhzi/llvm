@@ -42,25 +42,15 @@ unsigned MipsFunctionInfo::getGlobalBaseReg() {
       STI.inMips16Mode()
           ? &Mips::CPU16RegsRegClass
           : STI.inMicroMipsMode()
-                ? &Mips::GPRMM16RegClass
+                ? STI.hasMips64()
+                      ? &Mips::GPRMM16_64RegClass
+                      : &Mips::GPRMM16RegClass
                 : static_cast<const MipsTargetMachine &>(MF.getTarget())
                           .getABI()
                           .IsN64()
                       ? &Mips::GPR64RegClass
                       : &Mips::GPR32RegClass;
   return GlobalBaseReg = MF.getRegInfo().createVirtualRegister(RC);
-}
-
-bool MipsFunctionInfo::mips16SPAliasRegSet() const {
-  return Mips16SPAliasReg;
-}
-unsigned MipsFunctionInfo::getMips16SPAliasReg() {
-  // Return if it has already been initialized.
-  if (Mips16SPAliasReg)
-    return Mips16SPAliasReg;
-
-  const TargetRegisterClass *RC = &Mips::CPU16RegsRegClass;
-  return Mips16SPAliasReg = MF.getRegInfo().createVirtualRegister(RC);
 }
 
 void MipsFunctionInfo::createEhDataRegsFI() {
@@ -70,9 +60,21 @@ void MipsFunctionInfo::createEhDataRegsFI() {
             ? &Mips::GPR64RegClass
             : &Mips::GPR32RegClass;
 
-    EhDataRegFI[I] = MF.getFrameInfo()->CreateStackObject(RC->getSize(),
+    EhDataRegFI[I] = MF.getFrameInfo().CreateStackObject(RC->getSize(),
         RC->getAlignment(), false);
   }
+}
+
+void MipsFunctionInfo::createISRRegFI() {
+  // ISRs require spill slots for Status & ErrorPC Coprocessor 0 registers.
+  // The current implementation only supports Mips32r2+ not Mips64rX. Status
+  // is always 32 bits, ErrorPC is 32 or 64 bits dependent on architecture,
+  // however Mips32r2+ is the supported architecture.
+  const TargetRegisterClass *RC = &Mips::GPR32RegClass;
+
+  for (int I = 0; I < 2; ++I)
+    ISRDataRegFI[I] = MF.getFrameInfo().CreateStackObject(
+        RC->getSize(), RC->getAlignment(), false);
 }
 
 bool MipsFunctionInfo::isEhDataRegFI(int FI) const {
@@ -80,6 +82,9 @@ bool MipsFunctionInfo::isEhDataRegFI(int FI) const {
                         || FI == EhDataRegFI[2] || FI == EhDataRegFI[3]);
 }
 
+bool MipsFunctionInfo::isISRRegFI(int FI) const {
+  return IsISR && (FI == ISRDataRegFI[0] || FI == ISRDataRegFI[1]);
+}
 MachinePointerInfo MipsFunctionInfo::callPtrInfo(const char *ES) {
   return MachinePointerInfo(MF.getPSVManager().getExternalSymbolCallEntry(ES));
 }
@@ -90,7 +95,7 @@ MachinePointerInfo MipsFunctionInfo::callPtrInfo(const GlobalValue *GV) {
 
 int MipsFunctionInfo::getMoveF64ViaSpillFI(const TargetRegisterClass *RC) {
   if (MoveF64ViaSpillFI == -1) {
-    MoveF64ViaSpillFI = MF.getFrameInfo()->CreateStackObject(
+    MoveF64ViaSpillFI = MF.getFrameInfo().CreateStackObject(
         RC->getSize(), RC->getAlignment(), false);
   }
   return MoveF64ViaSpillFI;

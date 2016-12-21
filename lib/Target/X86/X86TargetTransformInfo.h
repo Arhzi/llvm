@@ -39,16 +39,9 @@ class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
   const X86TargetLowering *getTLI() const { return TLI; }
 
 public:
-  explicit X86TTIImpl(const X86TargetMachine *TM, Function &F)
+  explicit X86TTIImpl(const X86TargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
         TLI(ST->getTargetLowering()) {}
-
-  // Provide value semantics. MSVC requires that we spell all of these out.
-  X86TTIImpl(const X86TTIImpl &Arg)
-      : BaseT(static_cast<const BaseT &>(Arg)), ST(Arg.ST), TLI(Arg.TLI) {}
-  X86TTIImpl(X86TTIImpl &&Arg)
-      : BaseT(std::move(static_cast<BaseT &>(Arg))), ST(std::move(Arg.ST)),
-        TLI(std::move(Arg.TLI)) {}
 
   /// \name Scalar TTI Implementations
   /// @{
@@ -76,8 +69,14 @@ public:
                       unsigned AddressSpace);
   int getMaskedMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
                             unsigned AddressSpace);
-
+  int getGatherScatterOpCost(unsigned Opcode, Type *DataTy, Value *Ptr,
+                             bool VariableMask, unsigned Alignment);
   int getAddressComputationCost(Type *PtrTy, bool IsComplex);
+
+  int getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
+                            ArrayRef<Type *> Tys, FastMathFlags FMF);
+  int getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
+                            ArrayRef<Value *> Args, FastMathFlags FMF);
 
   int getReductionCost(unsigned Opcode, Type *Ty, bool IsPairwiseForm);
 
@@ -88,10 +87,19 @@ public:
   int getIntImmCost(unsigned Opcode, unsigned Idx, const APInt &Imm, Type *Ty);
   int getIntImmCost(Intrinsic::ID IID, unsigned Idx, const APInt &Imm,
                     Type *Ty);
-  bool isLegalMaskedLoad(Type *DataType, int Consecutive);
-  bool isLegalMaskedStore(Type *DataType, int Consecutive);
+  bool isLegalMaskedLoad(Type *DataType);
+  bool isLegalMaskedStore(Type *DataType);
+  bool isLegalMaskedGather(Type *DataType);
+  bool isLegalMaskedScatter(Type *DataType);
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const;
+
+  bool enableInterleavedAccessVectorization();
+private:
+  int getGSScalarCost(unsigned Opcode, Type *DataTy, bool VariableMask,
+                      unsigned Alignment, unsigned AddressSpace);
+  int getGSVectorCost(unsigned Opcode, Type *DataTy, Value *Ptr,
+                      unsigned Alignment, unsigned AddressSpace);
 
   /// @}
 };

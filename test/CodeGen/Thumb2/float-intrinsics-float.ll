@@ -18,7 +18,7 @@ declare float     @llvm.powi.f32(float %Val, i32 %power)
 define float @powi_f(float %a, i32 %b) {
 ; CHECK-LABEL: powi_f:
 ; SOFT: bl __powisf2
-; HARD: b __powisf2
+; HARD: bl __powisf2
   %1 = call float @llvm.powi.f32(float %a, i32 %b)
   ret float %1
 }
@@ -205,7 +205,7 @@ define float @fmuladd_f(float %a, float %b, float %c) {
 declare i16 @llvm.convert.to.fp16.f32(float %a)
 define i16 @f_to_h(float %a) {
 ; CHECK-LABEL: f_to_h:
-; SOFT: bl __gnu_f2h_ieee
+; SOFT: bl __aeabi_f2h
 ; HARD: vcvt{{[bt]}}.f16.f32
   %1 = call i16 @llvm.convert.to.fp16.f32(float %a)
   ret i16 %1
@@ -214,7 +214,7 @@ define i16 @f_to_h(float %a) {
 declare float @llvm.convert.from.fp16.f32(i16 %a)
 define float @h_to_f(i16 %a) {
 ; CHECK-LABEL: h_to_f:
-; SOFT: bl __gnu_h2f_ieee
+; SOFT: bl __aeabi_h2f
 ; HARD: vcvt{{[bt]}}.f32.f16
   %1 = call float @llvm.convert.from.fp16.f32(i16 %a)
   ret float %1

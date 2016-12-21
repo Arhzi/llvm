@@ -7,37 +7,48 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/IR/PassManager.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/PassManager.h"
 
 using namespace llvm;
 
-char FunctionAnalysisManagerModuleProxy::PassID;
+// Explicit template instantiations and specialization defininitions for core
+// template typedefs.
+namespace llvm {
+template class AllAnalysesOn<Module>;
+template class AllAnalysesOn<Function>;
+template class PassManager<Module>;
+template class PassManager<Function>;
+template class AnalysisManager<Module>;
+template class AnalysisManager<Function>;
+template class InnerAnalysisManagerProxy<FunctionAnalysisManager, Module>;
+template class OuterAnalysisManagerProxy<ModuleAnalysisManager, Function>;
 
-FunctionAnalysisManagerModuleProxy::Result
-FunctionAnalysisManagerModuleProxy::run(Module &M) {
-  assert(FAM->empty() && "Function analyses ran prior to the module proxy!");
-  return Result(*FAM);
-}
-
-FunctionAnalysisManagerModuleProxy::Result::~Result() {
-  // Clear out the analysis manager if we're being destroyed -- it means we
-  // didn't even see an invalidate call when we got invalidated.
-  FAM->clear();
-}
-
+template <>
 bool FunctionAnalysisManagerModuleProxy::Result::invalidate(
-    Module &M, const PreservedAnalyses &PA) {
-  // If this proxy isn't marked as preserved, then we can't even invalidate
-  // individual function analyses, there may be an invalid set of Function
-  // objects in the cache making it impossible to incrementally preserve them.
-  // Just clear the entire manager.
-  if (!PA.preserved(ID()))
-    FAM->clear();
+    Module &M, const PreservedAnalyses &PA,
+    ModuleAnalysisManager::Invalidator &Inv) {
+  // If this proxy isn't marked as preserved, then even if the result remains
+  // valid, the key itself may no longer be valid, so we clear everything.
+  //
+  // Note that in order to preserve this proxy, a module pass must ensure that
+  // the FAM has been completely updated to handle the deletion of functions.
+  // Specifically, any FAM-cached results for those functions need to have been
+  // forcibly cleared. When preserved, this proxy will only invalidate results
+  // cached on functions *still in the module* at the end of the module pass.
+  if (!PA.preserved(FunctionAnalysisManagerModuleProxy::ID())) {
+    InnerAM->clear();
+    return true;
+  }
+
+  // Otherwise propagate the invalidation event to all the remaining IR units.
+  for (Function &F : M)
+    InnerAM->invalidate(F, PA);
 
   // Return false to indicate that this result is still a valid proxy.
   return false;
 }
+}
 
-char ModuleAnalysisManagerFunctionProxy::PassID;
+AnalysisKey PreservedAnalyses::AllAnalysesKey;

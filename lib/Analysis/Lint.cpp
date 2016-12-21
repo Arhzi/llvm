@@ -35,27 +35,48 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/Lint.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/Loads.h"
+#include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Constant.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Value.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
+#include <cstdint>
+#include <iterator>
+#include <string>
+
 using namespace llvm;
 
 namespace {
@@ -64,7 +85,7 @@ namespace {
     static const unsigned Write    = 2;
     static const unsigned Callee   = 4;
     static const unsigned Branchee = 8;
-  }
+  } // end namespace MemRef
 
   class Lint : public FunctionPass, public InstVisitor<Lint> {
     friend class InstVisitor<Lint>;
@@ -123,7 +144,7 @@ namespace {
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesAll();
-      AU.addRequired<AliasAnalysis>();
+      AU.addRequired<AAResultsWrapperPass>();
       AU.addRequired<AssumptionCacheTracker>();
       AU.addRequired<TargetLibraryInfoWrapperPass>();
       AU.addRequired<DominatorTreeWrapperPass>();
@@ -159,7 +180,7 @@ namespace {
       WriteValues({V1, Vs...});
     }
   };
-}
+} // end anonymous namespace
 
 char Lint::ID = 0;
 INITIALIZE_PASS_BEGIN(Lint, "lint", "Statically lint-checks LLVM IR",
@@ -167,13 +188,13 @@ INITIALIZE_PASS_BEGIN(Lint, "lint", "Statically lint-checks LLVM IR",
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_AG_DEPENDENCY(AliasAnalysis)
+INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_END(Lint, "lint", "Statically lint-checks LLVM IR",
                     false, true)
 
 // Assert - We know that cond should be true, if not print an error message.
 #define Assert(C, ...) \
-    do { if (!(C)) { CheckFailed(__VA_ARGS__); return; } } while (0)
+    do { if (!(C)) { CheckFailed(__VA_ARGS__); return; } } while (false)
 
 // Lint::run - This is the main Analysis entry point for a
 // function.
@@ -181,7 +202,7 @@ INITIALIZE_PASS_END(Lint, "lint", "Statically lint-checks LLVM IR",
 bool Lint::runOnFunction(Function &F) {
   Mod = F.getParent();
   DL = &F.getParent()->getDataLayout();
-  AA = &getAnalysis<AliasAnalysis>();
+  AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
   AC = &getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
   DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
@@ -234,7 +255,7 @@ void Lint::visitCallSite(CallSite CS) {
     for (; AI != AE; ++AI) {
       Value *Actual = *AI;
       if (PI != PE) {
-        Argument *Formal = PI++;
+        Argument *Formal = &*PI++;
         Assert(Formal->getType() == Actual->getType(),
                "Undefined behavior: Call argument type mismatches "
                "callee parameter type",
@@ -345,13 +366,6 @@ void Lint::visitCallSite(CallSite CS) {
       visitMemoryReference(I, CS.getArgument(0), MemoryLocation::UnknownSize, 0,
                            nullptr, MemRef::Read | MemRef::Write);
       break;
-
-    case Intrinsic::eh_begincatch:
-      visitEHBeginCatch(II);
-      break;
-    case Intrinsic::eh_endcatch:
-      visitEHEndCatch(II);
-      break;
     }
 }
 
@@ -442,7 +456,7 @@ void Lint::visitMemoryReference(Instruction &I,
       // If the global may be defined differently in another compilation unit
       // then don't warn about funky memory accesses.
       if (GV->hasDefinitiveInitializer()) {
-        Type *GTy = GV->getType()->getElementType();
+        Type *GTy = GV->getValueType();
         if (GTy->isSized())
           BaseSize = DL->getTypeAllocSize(GTy);
         BaseAlign = GV->getAlignment();
@@ -509,187 +523,6 @@ void Lint::visitShl(BinaryOperator &I) {
           dyn_cast<ConstantInt>(findValue(I.getOperand(1), /*OffsetOk=*/false)))
     Assert(CI->getValue().ult(cast<IntegerType>(I.getType())->getBitWidth()),
            "Undefined result: Shift count out of range", &I);
-}
-
-static bool
-allPredsCameFromLandingPad(BasicBlock *BB,
-                           SmallSet<BasicBlock *, 4> &VisitedBlocks) {
-  VisitedBlocks.insert(BB);
-  if (BB->isLandingPad())
-    return true;
-  // If we find a block with no predecessors, the search failed.
-  if (pred_empty(BB))
-    return false;
-  for (BasicBlock *Pred : predecessors(BB)) {
-    if (VisitedBlocks.count(Pred))
-      continue;
-    if (!allPredsCameFromLandingPad(Pred, VisitedBlocks))
-      return false;
-  }
-  return true;
-}
-
-static bool
-allSuccessorsReachEndCatch(BasicBlock *BB, BasicBlock::iterator InstBegin,
-                           IntrinsicInst **SecondBeginCatch,
-                           SmallSet<BasicBlock *, 4> &VisitedBlocks) {
-  VisitedBlocks.insert(BB);
-  for (BasicBlock::iterator I = InstBegin, E = BB->end(); I != E; ++I) {
-    IntrinsicInst *IC = dyn_cast<IntrinsicInst>(I);
-    if (IC && IC->getIntrinsicID() == Intrinsic::eh_endcatch)
-      return true;
-    // If we find another begincatch while looking for an endcatch,
-    // that's also an error.
-    if (IC && IC->getIntrinsicID() == Intrinsic::eh_begincatch) {
-      *SecondBeginCatch = IC;
-      return false;
-    }
-  }
-
-  // If we reach a block with no successors while searching, the
-  // search has failed.
-  if (succ_empty(BB))
-    return false;
-  // Otherwise, search all of the successors.
-  for (BasicBlock *Succ : successors(BB)) {
-    if (VisitedBlocks.count(Succ))
-      continue;
-    if (!allSuccessorsReachEndCatch(Succ, Succ->begin(), SecondBeginCatch,
-                                    VisitedBlocks))
-      return false;
-  }
-  return true;
-}
-
-void Lint::visitEHBeginCatch(IntrinsicInst *II) {
-  // The checks in this function make a potentially dubious assumption about
-  // the CFG, namely that any block involved in a catch is only used for the
-  // catch.  This will very likely be true of IR generated by a front end,
-  // but it may cease to be true, for example, if the IR is run through a
-  // pass which combines similar blocks.
-  //
-  // In general, if we encounter a block the isn't dominated by the catch
-  // block while we are searching the catch block's successors for a call
-  // to end catch intrinsic, then it is possible that it will be legal for
-  // a path through this block to never reach a call to llvm.eh.endcatch.
-  // An analogous statement could be made about our search for a landing
-  // pad among the catch block's predecessors.
-  //
-  // What is actually required is that no path is possible at runtime that
-  // reaches a call to llvm.eh.begincatch without having previously visited
-  // a landingpad instruction and that no path is possible at runtime that
-  // calls llvm.eh.begincatch and does not subsequently call llvm.eh.endcatch
-  // (mentally adjusting for the fact that in reality these calls will be
-  // removed before code generation).
-  //
-  // Because this is a lint check, we take a pessimistic approach and warn if
-  // the control flow is potentially incorrect.
-
-  SmallSet<BasicBlock *, 4> VisitedBlocks;
-  BasicBlock *CatchBB = II->getParent();
-
-  // The begin catch must occur in a landing pad block or all paths
-  // to it must have come from a landing pad.
-  Assert(allPredsCameFromLandingPad(CatchBB, VisitedBlocks),
-         "llvm.eh.begincatch may be reachable without passing a landingpad",
-         II);
-
-  // Reset the visited block list.
-  VisitedBlocks.clear();
-
-  IntrinsicInst *SecondBeginCatch = nullptr;
-
-  // This has to be called before it is asserted.  Otherwise, the first assert
-  // below can never be hit.
-  bool EndCatchFound = allSuccessorsReachEndCatch(
-      CatchBB, std::next(static_cast<BasicBlock::iterator>(II)),
-      &SecondBeginCatch, VisitedBlocks);
-  Assert(
-      SecondBeginCatch == nullptr,
-      "llvm.eh.begincatch may be called a second time before llvm.eh.endcatch",
-      II, SecondBeginCatch);
-  Assert(EndCatchFound,
-         "Some paths from llvm.eh.begincatch may not reach llvm.eh.endcatch",
-         II);
-}
-
-static bool allPredCameFromBeginCatch(
-    BasicBlock *BB, BasicBlock::reverse_iterator InstRbegin,
-    IntrinsicInst **SecondEndCatch, SmallSet<BasicBlock *, 4> &VisitedBlocks) {
-  VisitedBlocks.insert(BB);
-  // Look for a begincatch in this block.
-  for (BasicBlock::reverse_iterator RI = InstRbegin, RE = BB->rend(); RI != RE;
-       ++RI) {
-    IntrinsicInst *IC = dyn_cast<IntrinsicInst>(&*RI);
-    if (IC && IC->getIntrinsicID() == Intrinsic::eh_begincatch)
-      return true;
-    // If we find another end catch before we find a begin catch, that's
-    // an error.
-    if (IC && IC->getIntrinsicID() == Intrinsic::eh_endcatch) {
-      *SecondEndCatch = IC;
-      return false;
-    }
-    // If we encounter a landingpad instruction, the search failed.
-    if (isa<LandingPadInst>(*RI))
-      return false;
-  }
-  // If while searching we find a block with no predeccesors,
-  // the search failed.
-  if (pred_empty(BB))
-    return false;
-  // Search any predecessors we haven't seen before.
-  for (BasicBlock *Pred : predecessors(BB)) {
-    if (VisitedBlocks.count(Pred))
-      continue;
-    if (!allPredCameFromBeginCatch(Pred, Pred->rbegin(), SecondEndCatch,
-                                   VisitedBlocks))
-      return false;
-  }
-  return true;
-}
-
-void Lint::visitEHEndCatch(IntrinsicInst *II) {
-  // The check in this function makes a potentially dubious assumption about
-  // the CFG, namely that any block involved in a catch is only used for the
-  // catch.  This will very likely be true of IR generated by a front end,
-  // but it may cease to be true, for example, if the IR is run through a
-  // pass which combines similar blocks.
-  //
-  // In general, if we encounter a block the isn't post-dominated by the
-  // end catch block while we are searching the end catch block's predecessors
-  // for a call to the begin catch intrinsic, then it is possible that it will
-  // be legal for a path to reach the end catch block without ever having
-  // called llvm.eh.begincatch.
-  //
-  // What is actually required is that no path is possible at runtime that
-  // reaches a call to llvm.eh.endcatch without having previously visited
-  // a call to llvm.eh.begincatch (mentally adjusting for the fact that in
-  // reality these calls will be removed before code generation).
-  //
-  // Because this is a lint check, we take a pessimistic approach and warn if
-  // the control flow is potentially incorrect.
-
-  BasicBlock *EndCatchBB = II->getParent();
-
-  // Alls paths to the end catch call must pass through a begin catch call.
-
-  // If llvm.eh.begincatch wasn't called in the current block, we'll use this
-  // lambda to recursively look for it in predecessors.
-  SmallSet<BasicBlock *, 4> VisitedBlocks;
-  IntrinsicInst *SecondEndCatch = nullptr;
-
-  // This has to be called before it is asserted.  Otherwise, the first assert
-  // below can never be hit.
-  bool BeginCatchFound =
-      allPredCameFromBeginCatch(EndCatchBB, BasicBlock::reverse_iterator(II),
-                                &SecondEndCatch, VisitedBlocks);
-  Assert(
-      SecondEndCatch == nullptr,
-      "llvm.eh.endcatch may be called a second time after llvm.eh.begincatch",
-      II, SecondEndCatch);
-  Assert(BeginCatchFound,
-         "llvm.eh.endcatch may be reachable without passing llvm.eh.begincatch",
-         II);
 }
 
 static bool isZero(Value *V, const DataLayout &DL, DominatorTree *DT,
@@ -790,8 +623,8 @@ void Lint::visitInsertElementInst(InsertElementInst &I) {
 
 void Lint::visitUnreachableInst(UnreachableInst &I) {
   // This isn't undefined behavior, it's merely suspicious.
-  Assert(&I == I.getParent()->begin() ||
-             std::prev(BasicBlock::iterator(&I))->mayHaveSideEffects(),
+  Assert(&I == &I.getParent()->front() ||
+             std::prev(I.getIterator())->mayHaveSideEffects(),
          "Unusual: unreachable immediately preceded by instruction without "
          "side effects",
          &I);
@@ -823,14 +656,14 @@ Value *Lint::findValueImpl(Value *V, bool OffsetOk,
   // TODO: Look through vector insert/extract/shuffle.
   V = OffsetOk ? GetUnderlyingObject(V, *DL) : V->stripPointerCasts();
   if (LoadInst *L = dyn_cast<LoadInst>(V)) {
-    BasicBlock::iterator BBI = L;
+    BasicBlock::iterator BBI = L->getIterator();
     BasicBlock *BB = L->getParent();
     SmallPtrSet<BasicBlock *, 4> VisitedBlocks;
     for (;;) {
       if (!VisitedBlocks.insert(BB).second)
         break;
-      if (Value *U = FindAvailableLoadedValue(L->getPointerOperand(),
-                                              BB, BBI, 6, AA))
+      if (Value *U =
+          FindAvailableLoadedValue(L, BB, BBI, DefMaxInstsToScan, AA))
         return findValueImpl(U, OffsetOk, Visited);
       if (BBI != BB->begin()) break;
       BB = BB->getUniquePredecessor();
@@ -868,9 +701,9 @@ Value *Lint::findValueImpl(Value *V, bool OffsetOk,
   if (Instruction *Inst = dyn_cast<Instruction>(V)) {
     if (Value *W = SimplifyInstruction(Inst, *DL, TLI, DT, AC))
       return findValueImpl(W, OffsetOk, Visited);
-  } else if (ConstantExpr *CE = dyn_cast<ConstantExpr>(V)) {
-    if (Value *W = ConstantFoldConstantExpression(CE, *DL, TLI))
-      if (W != V)
+  } else if (auto *C = dyn_cast<Constant>(V)) {
+    if (Value *W = ConstantFoldConstant(C, *DL, TLI))
+      if (W && W != V)
         return findValueImpl(W, OffsetOk, Visited);
   }
 

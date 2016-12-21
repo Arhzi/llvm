@@ -37,7 +37,7 @@ public:
 
   std::error_code printSymbolName(raw_ostream &OS,
                                   DataRefImpl Symb) const override {
-    if (Symb.p == 1)
+    if (Symb.p == 0)
       OS << "__imp_";
     OS << StringRef(Data.getBufferStart() + sizeof(coff_import_header));
     return std::error_code();
@@ -47,11 +47,11 @@ public:
     return SymbolRef::SF_Global;
   }
 
-  basic_symbol_iterator symbol_begin_impl() const override {
+  basic_symbol_iterator symbol_begin() const override {
     return BasicSymbolRef(DataRefImpl(), this);
   }
 
-  basic_symbol_iterator symbol_end_impl() const override {
+  basic_symbol_iterator symbol_end() const override {
     DataRefImpl Symb;
     Symb.p = isCode() ? 2 : 1;
     return BasicSymbolRef(Symb, this);

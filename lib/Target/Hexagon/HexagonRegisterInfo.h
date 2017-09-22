@@ -15,7 +15,6 @@
 #ifndef LLVM_LIB_TARGET_HEXAGON_HEXAGONREGISTERINFO_H
 #define LLVM_LIB_TARGET_HEXAGON_HEXAGONREGISTERINFO_H
 
-#include "llvm/MC/MachineLocation.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 
 #define GET_REGINFO_HEADER
@@ -30,12 +29,13 @@ namespace Hexagon {
 
 class HexagonRegisterInfo : public HexagonGenRegisterInfo {
 public:
-  HexagonRegisterInfo();
+  HexagonRegisterInfo(unsigned HwMode);
 
   /// Code Generation virtual methods...
   const MCPhysReg *getCalleeSavedRegs(const MachineFunction *MF)
         const override;
-
+  const uint32_t *getCallPreservedMask(const MachineFunction &MF,
+        CallingConv::ID) const override;
 
   BitVector getReservedRegs(const MachineFunction &MF) const override;
 
@@ -76,7 +76,6 @@ public:
   unsigned getFirstCallerSavedNonParamReg() const;
 
   bool isEHReturnCalleeSaveReg(unsigned Reg) const;
-  bool isCalleeSaveReg(unsigned Reg) const;
 };
 
 } // end namespace llvm

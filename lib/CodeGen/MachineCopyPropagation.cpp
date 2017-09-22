@@ -11,30 +11,39 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/CodeGen/Passes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include <cassert>
+#include <iterator>
+
 using namespace llvm;
 
-#define DEBUG_TYPE "codegen-cp"
+#define DEBUG_TYPE "machine-cp"
 
 STATISTIC(NumDeletes, "Number of dead copies deleted");
 
 namespace {
-  typedef SmallVector<unsigned, 4> RegList;
-  typedef DenseMap<unsigned, RegList> SourceMap;
-  typedef DenseMap<unsigned, MachineInstr*> Reg2MIMap;
+
+using RegList = SmallVector<unsigned, 4>;
+using SourceMap = DenseMap<unsigned, RegList>;
+using Reg2MIMap = DenseMap<unsigned, MachineInstr *>;
 
   class MachineCopyPropagation : public MachineFunctionPass {
     const TargetRegisterInfo *TRI;
@@ -43,6 +52,7 @@ namespace {
 
   public:
     static char ID; // Pass identification, replacement for typeid
+
     MachineCopyPropagation() : MachineFunctionPass(ID) {
       initializeMachineCopyPropagationPass(*PassRegistry::getPassRegistry());
     }
@@ -61,24 +71,32 @@ namespace {
 
   private:
     void ClobberRegister(unsigned Reg);
+    void ReadRegister(unsigned Reg);
     void CopyPropagateBlock(MachineBasicBlock &MBB);
     bool eraseIfRedundant(MachineInstr &Copy, unsigned Src, unsigned Def);
 
     /// Candidates for deletion.
     SmallSetVector<MachineInstr*, 8> MaybeDeadCopies;
+
     /// Def -> available copies map.
     Reg2MIMap AvailCopyMap;
+
     /// Def -> copies map.
     Reg2MIMap CopyMap;
+
     /// Src -> Def map
     SourceMap SrcMap;
+
     bool Changed;
   };
-}
+
+} // end anonymous namespace
+
 char MachineCopyPropagation::ID = 0;
+
 char &llvm::MachineCopyPropagationID = MachineCopyPropagation::ID;
 
-INITIALIZE_PASS(MachineCopyPropagation, "machine-cp",
+INITIALIZE_PASS(MachineCopyPropagation, DEBUG_TYPE,
                 "Machine Copy Propagation Pass", false, false)
 
 /// Remove any entry in \p Map where the register is a subregister or equal to
@@ -116,6 +134,18 @@ void MachineCopyPropagation::ClobberRegister(unsigned Reg) {
     if (SI != SrcMap.end()) {
       removeRegsFromMap(AvailCopyMap, SI->second, *TRI);
       SrcMap.erase(SI);
+    }
+  }
+}
+
+void MachineCopyPropagation::ReadRegister(unsigned Reg) {
+  // If 'Reg' is defined by a copy, the copy is no longer a candidate
+  // for elimination.
+  for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI) {
+    Reg2MIMap::iterator CI = CopyMap.find(*AI);
+    if (CI != CopyMap.end()) {
+      DEBUG(dbgs() << "MCP: Copy is used - not dead: "; CI->second->dump());
+      MaybeDeadCopies.remove(CI->second);
     }
   }
 }
@@ -212,12 +242,14 @@ void MachineCopyPropagation::CopyPropagateBlock(MachineBasicBlock &MBB) {
 
       // If Src is defined by a previous copy, the previous copy cannot be
       // eliminated.
-      for (MCRegAliasIterator AI(Src, TRI, true); AI.isValid(); ++AI) {
-        Reg2MIMap::iterator CI = CopyMap.find(*AI);
-        if (CI != CopyMap.end()) {
-          DEBUG(dbgs() << "MCP: Copy is no longer dead: "; CI->second->dump());
-          MaybeDeadCopies.remove(CI->second);
-        }
+      ReadRegister(Src);
+      for (const MachineOperand &MO : MI->implicit_operands()) {
+        if (!MO.isReg() || !MO.readsReg())
+          continue;
+        unsigned Reg = MO.getReg();
+        if (!Reg)
+          continue;
+        ReadRegister(Reg);
       }
 
       DEBUG(dbgs() << "MCP: Copy is a deletion candidate: "; MI->dump());
@@ -234,6 +266,14 @@ void MachineCopyPropagation::CopyPropagateBlock(MachineBasicBlock &MBB) {
       // ...
       // %xmm2<def> = copy %xmm9
       ClobberRegister(Def);
+      for (const MachineOperand &MO : MI->implicit_operands()) {
+        if (!MO.isReg() || !MO.isDef())
+          continue;
+        unsigned Reg = MO.getReg();
+        if (!Reg)
+          continue;
+        ClobberRegister(Reg);
+      }
 
       // Remember Def is defined by the copy.
       for (MCSubRegIterator SR(Def, TRI, /*IncludeSelf=*/true); SR.isValid();
@@ -269,25 +309,8 @@ void MachineCopyPropagation::CopyPropagateBlock(MachineBasicBlock &MBB) {
       if (MO.isDef()) {
         Defs.push_back(Reg);
         continue;
-      }
-
-      // If 'Reg' is defined by a copy, the copy is no longer a candidate
-      // for elimination.
-      for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI) {
-        Reg2MIMap::iterator CI = CopyMap.find(*AI);
-        if (CI != CopyMap.end()) {
-          DEBUG(dbgs() << "MCP: Copy is used - not dead: "; CI->second->dump());
-          MaybeDeadCopies.remove(CI->second);
-        }
-      }
-      // Treat undef use like defs for copy propagation but not for
-      // dead copy. We would need to do a liveness check to be sure the copy
-      // is dead for undef uses.
-      // The backends are allowed to do whatever they want with undef value
-      // and we cannot be sure this register will not be rewritten to break
-      // some false dependencies for the hardware for instance.
-      if (MO.isUndef())
-        Defs.push_back(Reg);
+      } else if (MO.readsReg())
+        ReadRegister(Reg);
     }
 
     // The instruction has a register mask operand which means that it clobbers
@@ -368,4 +391,3 @@ bool MachineCopyPropagation::runOnMachineFunction(MachineFunction &MF) {
 
   return Changed;
 }
-

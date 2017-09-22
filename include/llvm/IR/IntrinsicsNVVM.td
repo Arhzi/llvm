@@ -11,6 +11,27 @@
 //
 //===----------------------------------------------------------------------===//
 
+// The following intrinsics were once defined here, but are now auto-upgraded
+// to target-generic LLVM intrinsics.
+//
+//   * llvm.nvvm.brev32  --> llvm.bitreverse.i32
+//   * llvm.nvvm.brev64  --> llvm.bitreverse.i64
+//   * llvm.nvvm.clz.i   --> llvm.ctlz.i32
+//   * llvm.nvvm.clz.ll  --> trunc i64 llvm.ctlz.i64(x) to i32
+//   * llvm.nvvm.popc.i  --> llvm.ctpop.i32
+//   * llvm.nvvm.popc.ll --> trunc i64 llvm.ctpop.i64 to i32
+//   * llvm.nvvm.abs.i   --> select(x >= -x, x, -x)
+//   * llvm.nvvm.abs.ll  --> ibid.
+//   * llvm.nvvm.max.i   --> select(x sge y, x, y)
+//   * llvm.nvvm.max.ll  --> ibid.
+//   * llvm.nvvm.max.ui  --> select(x uge y, x, y)
+//   * llvm.nvvm.max.ull --> ibid.
+//   * llvm.nvvm.max.i   --> select(x sle y, x, y)
+//   * llvm.nvvm.max.ll  --> ibid.
+//   * llvm.nvvm.max.ui  --> select(x ule y, x, y)
+//   * llvm.nvvm.max.ull --> ibid.
+//   * llvm.nvvm.h2f     --> llvm.convert.to.fp16.f32
+
 def llvm_anyi64ptr_ty     : LLVMAnyPointerType<llvm_i64_ty>;     // (space)i64*
 
 //
@@ -18,16 +39,6 @@ def llvm_anyi64ptr_ty     : LLVMAnyPointerType<llvm_i64_ty>;     // (space)i64*
 //
 
 let TargetPrefix = "nvvm" in {
-  def int_nvvm_clz_i : GCCBuiltin<"__nvvm_clz_i">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrNoMem]>;
-  def int_nvvm_clz_ll : GCCBuiltin<"__nvvm_clz_ll">,
-      Intrinsic<[llvm_i32_ty], [llvm_i64_ty], [IntrNoMem]>;
-
-  def int_nvvm_popc_i : GCCBuiltin<"__nvvm_popc_i">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrNoMem]>;
-  def int_nvvm_popc_ll : GCCBuiltin<"__nvvm_popc_ll">,
-      Intrinsic<[llvm_i32_ty], [llvm_i64_ty], [IntrNoMem]>;
-
   def int_nvvm_prmt : GCCBuiltin<"__nvvm_prmt">,
       Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
         [IntrNoMem, Commutative]>;
@@ -35,34 +46,6 @@ let TargetPrefix = "nvvm" in {
 //
 // Min Max
 //
-
-  def int_nvvm_min_i : GCCBuiltin<"__nvvm_min_i">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty],
-        [IntrNoMem, Commutative]>;
-  def int_nvvm_min_ui : GCCBuiltin<"__nvvm_min_ui">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty],
-        [IntrNoMem, Commutative]>;
-
-  def int_nvvm_min_ll : GCCBuiltin<"__nvvm_min_ll">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty, llvm_i64_ty],
-        [IntrNoMem, Commutative]>;
-  def int_nvvm_min_ull : GCCBuiltin<"__nvvm_min_ull">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty, llvm_i64_ty],
-        [IntrNoMem, Commutative]>;
-
-  def int_nvvm_max_i : GCCBuiltin<"__nvvm_max_i">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty],
-        [IntrNoMem, Commutative]>;
-  def int_nvvm_max_ui : GCCBuiltin<"__nvvm_max_ui">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty],
-        [IntrNoMem, Commutative]>;
-
-  def int_nvvm_max_ll : GCCBuiltin<"__nvvm_max_ll">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty, llvm_i64_ty],
-        [IntrNoMem, Commutative]>;
-  def int_nvvm_max_ull : GCCBuiltin<"__nvvm_max_ull">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty, llvm_i64_ty],
-        [IntrNoMem, Commutative]>;
 
   def int_nvvm_fmin_f : GCCBuiltin<"__nvvm_fmin_f">,
       Intrinsic<[llvm_float_ty], [llvm_float_ty, llvm_float_ty],
@@ -201,15 +184,6 @@ let TargetPrefix = "nvvm" in {
         [IntrNoMem, Commutative]>;
 
 //
-// Brev
-//
-
-  def int_nvvm_brev32 : GCCBuiltin<"__nvvm_brev32">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrNoMem]>;
-  def int_nvvm_brev64 : GCCBuiltin<"__nvvm_brev64">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty], [IntrNoMem]>;
-
-//
 // Sad
 //
 
@@ -242,16 +216,10 @@ let TargetPrefix = "nvvm" in {
 // Abs
 //
 
-  def int_nvvm_abs_i : GCCBuiltin<"__nvvm_abs_i">,
-      Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrNoMem]>;
-  def int_nvvm_abs_ll : GCCBuiltin<"__nvvm_abs_ll">,
-      Intrinsic<[llvm_i64_ty], [llvm_i64_ty], [IntrNoMem]>;
-
   def int_nvvm_fabs_ftz_f : GCCBuiltin<"__nvvm_fabs_ftz_f">,
       Intrinsic<[llvm_float_ty], [llvm_float_ty], [IntrNoMem]>;
   def int_nvvm_fabs_f : GCCBuiltin<"__nvvm_fabs_f">,
       Intrinsic<[llvm_float_ty], [llvm_float_ty], [IntrNoMem]>;
-
   def int_nvvm_fabs_d : GCCBuiltin<"__nvvm_fabs_d">,
       Intrinsic<[llvm_double_ty], [llvm_double_ty], [IntrNoMem]>;
 
@@ -700,9 +668,6 @@ let TargetPrefix = "nvvm" in {
   def int_nvvm_f2h_rn : GCCBuiltin<"__nvvm_f2h_rn">,
       Intrinsic<[llvm_i16_ty], [llvm_float_ty], [IntrNoMem]>;
 
-  def int_nvvm_h2f : GCCBuiltin<"__nvvm_h2f">,
-      Intrinsic<[llvm_float_ty], [llvm_i16_ty], [IntrNoMem]>;
-
 //
 // Bitcast
 //
@@ -768,6 +733,13 @@ let TargetPrefix = "nvvm" in {
   // intrinsics in this file, this one is a user-facing API.
   def int_nvvm_barrier0 : GCCBuiltin<"__syncthreads">,
       Intrinsic<[], [], [IntrConvergent]>;
+  // Synchronize all threads in the CTA at barrier 'n'.
+  def int_nvvm_barrier_n : GCCBuiltin<"__nvvm_bar_n">,
+      Intrinsic<[], [llvm_i32_ty], [IntrConvergent]>;
+  // Synchronize 'm', a multiple of warp size, (arg 2) threads in
+  // the CTA at barrier 'n' (arg 1).
+  def int_nvvm_barrier : GCCBuiltin<"__nvvm_bar">,
+      Intrinsic<[], [llvm_i32_ty, llvm_i32_ty], [IntrConvergent]>;
   def int_nvvm_barrier0_popc : GCCBuiltin<"__nvvm_bar0_popc">,
       Intrinsic<[llvm_i32_ty], [llvm_i32_ty], [IntrConvergent]>;
   def int_nvvm_barrier0_and : GCCBuiltin<"__nvvm_bar0_and">,
@@ -778,6 +750,17 @@ let TargetPrefix = "nvvm" in {
   def int_nvvm_bar_sync :
       Intrinsic<[], [llvm_i32_ty], [IntrConvergent]>,
       GCCBuiltin<"__nvvm_bar_sync">;
+  def int_nvvm_bar_warp_sync :
+      Intrinsic<[], [llvm_i32_ty], [IntrConvergent]>,
+      GCCBuiltin<"__nvvm_bar_warp_sync">;
+
+  // barrier.sync id[, cnt]
+  def int_nvvm_barrier_sync :
+      Intrinsic<[], [llvm_i32_ty], [IntrConvergent]>,
+      GCCBuiltin<"__nvvm_barrier_sync">;
+  def int_nvvm_barrier_sync_cnt :
+      Intrinsic<[], [llvm_i32_ty, llvm_i32_ty], [IntrConvergent]>,
+      GCCBuiltin<"__nvvm_barrier_sync_cnt">;
 
   // Membar
   def int_nvvm_membar_cta : GCCBuiltin<"__nvvm_membar_cta">,
@@ -3764,4 +3747,99 @@ def int_nvvm_shfl_idx_f32 :
   Intrinsic<[llvm_float_ty], [llvm_float_ty, llvm_i32_ty, llvm_i32_ty],
             [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.idx.f32">,
   GCCBuiltin<"__nvvm_shfl_idx_f32">;
-}
+
+// Synchronizing shfl variants available in CUDA-9.
+// On sm_70 these don't have to be convergent, so we may eventually want to
+// implement non-convergent variant of this intrinsic.
+
+// shfl.sync.down.b32 dest, threadmask, val, offset , mask_and_clamp
+def int_nvvm_shfl_sync_down_i32 :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.down.i32">,
+  GCCBuiltin<"__nvvm_shfl_sync_down_i32">;
+def int_nvvm_shfl_sync_down_f32 :
+  Intrinsic<[llvm_float_ty], [llvm_i32_ty, llvm_float_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.down.f32">,
+  GCCBuiltin<"__nvvm_shfl_sync_down_f32">;
+
+// shfl.sync.up.b32 dest, threadmask, val, offset, mask_and_clamp
+def int_nvvm_shfl_sync_up_i32 :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.up.i32">,
+  GCCBuiltin<"__nvvm_shfl_sync_up_i32">;
+def int_nvvm_shfl_sync_up_f32 :
+  Intrinsic<[llvm_float_ty], [llvm_i32_ty, llvm_float_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.up.f32">,
+  GCCBuiltin<"__nvvm_shfl_sync_up_f32">;
+
+// shfl.sync.bfly.b32 dest, threadmask, val, offset, mask_and_clamp
+def int_nvvm_shfl_sync_bfly_i32 :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.bfly.i32">,
+  GCCBuiltin<"__nvvm_shfl_sync_bfly_i32">;
+def int_nvvm_shfl_sync_bfly_f32 :
+  Intrinsic<[llvm_float_ty], [llvm_i32_ty, llvm_float_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.bfly.f32">,
+  GCCBuiltin<"__nvvm_shfl_sync_bfly_f32">;
+
+// shfl.sync.idx.b32 dest, threadmask, val, lane, mask_and_clamp
+def int_nvvm_shfl_sync_idx_i32 :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.idx.i32">,
+  GCCBuiltin<"__nvvm_shfl_sync_idx_i32">;
+def int_nvvm_shfl_sync_idx_f32 :
+  Intrinsic<[llvm_float_ty], [llvm_i32_ty, llvm_float_ty, llvm_i32_ty, llvm_i32_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.shfl.sync.idx.f32">,
+  GCCBuiltin<"__nvvm_shfl_sync_idx_f32">;
+
+//
+// VOTE
+//
+
+// vote.all pred
+def int_nvvm_vote_all :
+  Intrinsic<[llvm_i1_ty], [llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.all">,
+  GCCBuiltin<"__nvvm_vote_all">;
+// vote.any pred
+def int_nvvm_vote_any :
+  Intrinsic<[llvm_i1_ty], [llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.any">,
+  GCCBuiltin<"__nvvm_vote_any">;
+// vote.uni pred
+def int_nvvm_vote_uni :
+  Intrinsic<[llvm_i1_ty], [llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.uni">,
+  GCCBuiltin<"__nvvm_vote_uni">;
+// vote.ballot pred
+def int_nvvm_vote_ballot :
+  Intrinsic<[llvm_i32_ty], [llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.ballot">,
+  GCCBuiltin<"__nvvm_vote_ballot">;
+
+//
+// VOTE.SYNC
+//
+
+// vote.sync.all mask, pred
+def int_nvvm_vote_all_sync :
+  Intrinsic<[llvm_i1_ty], [llvm_i32_ty, llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.all.sync">,
+  GCCBuiltin<"__nvvm_vote_all_sync">;
+// vote.sync.any mask, pred
+def int_nvvm_vote_any_sync :
+  Intrinsic<[llvm_i1_ty], [llvm_i32_ty, llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.any.sync">,
+  GCCBuiltin<"__nvvm_vote_any_sync">;
+// vote.sync.uni mask, pred
+def int_nvvm_vote_uni_sync :
+  Intrinsic<[llvm_i1_ty], [llvm_i32_ty, llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.uni.sync">,
+  GCCBuiltin<"__nvvm_vote_uni_sync">;
+// vote.sync.ballot mask, pred
+def int_nvvm_vote_ballot_sync :
+  Intrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i1_ty],
+            [IntrNoMem, IntrConvergent], "llvm.nvvm.vote.ballot.sync">,
+  GCCBuiltin<"__nvvm_vote_ballot_sync">;
+
+} // let TargetPrefix = "nvvm"

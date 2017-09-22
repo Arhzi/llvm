@@ -53,12 +53,7 @@ public:
       : Index(Index), ModuleLoader(std::move(ModuleLoader)) {}
 
   /// Import functions in Module \p M based on the supplied import list.
-  /// \p ForceImportReferencedDiscardableSymbols will set the ModuleLinker in
-  /// a mode where referenced discarable symbols in the source modules will be
-  /// imported as well even if they are not present in the ImportList.
-  Expected<bool>
-  importFunctions(Module &M, const ImportMapTy &ImportList,
-                  bool ForceImportReferencedDiscardableSymbols = false);
+  Expected<bool> importFunctions(Module &M, const ImportMapTy &ImportList);
 
 private:
   /// The summaries index used to trigger importing.
@@ -99,6 +94,13 @@ void ComputeCrossModuleImport(
 void ComputeCrossModuleImportForModule(
     StringRef ModulePath, const ModuleSummaryIndex &Index,
     FunctionImporter::ImportMapTy &ImportList);
+
+/// Compute all the symbols that are "dead": i.e these that can't be reached
+/// in the graph from any of the given symbols listed in
+/// \p GUIDPreservedSymbols.
+void computeDeadSymbols(
+    ModuleSummaryIndex &Index,
+    const DenseSet<GlobalValue::GUID> &GUIDPreservedSymbols);
 
 /// Compute the set of summaries needed for a ThinLTO backend compilation of
 /// \p ModulePath.

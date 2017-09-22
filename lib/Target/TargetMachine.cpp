@@ -31,10 +31,6 @@
 #include "llvm/Target/TargetSubtargetInfo.h"
 using namespace llvm;
 
-cl::opt<bool> EnableIPRA("enable-ipra", cl::init(false), cl::Hidden,
-                         cl::desc("Enable interprocedural register allocation "
-                                  "to reduce load/store at procedure calls."));
-
 //---------------------------------------------------------------------------
 // TargetMachine Class
 //
@@ -44,9 +40,7 @@ TargetMachine::TargetMachine(const Target &T, StringRef DataLayoutString,
                              const TargetOptions &Options)
     : TheTarget(T), DL(DataLayoutString), TargetTriple(TT), TargetCPU(CPU),
       TargetFS(FS), AsmInfo(nullptr), MRI(nullptr), MII(nullptr), STI(nullptr),
-      RequireStructuredCFG(false), Options(Options) {
-  if (EnableIPRA.getNumOccurrences())
-    this->Options.EnableIPRA = EnableIPRA;
+      RequireStructuredCFG(false), DefaultOptions(Options), Options(Options) {
 }
 
 TargetMachine::~TargetMachine() {
@@ -63,20 +57,21 @@ bool TargetMachine::isPositionIndependent() const {
 /// \brief Reset the target options based on the function's attributes.
 // FIXME: This function needs to go away for a number of reasons:
 // a) global state on the TargetMachine is terrible in general,
-// b) there's no default state here to keep,
-// c) these target options should be passed only on the function
+// b) these target options should be passed only on the function
 //    and not on the TargetMachine (via TargetOptions) at all.
 void TargetMachine::resetTargetOptions(const Function &F) const {
 #define RESET_OPTION(X, Y)                                                     \
   do {                                                                         \
     if (F.hasFnAttribute(Y))                                                   \
       Options.X = (F.getFnAttribute(Y).getValueAsString() == "true");          \
+    else                                                                       \
+      Options.X = DefaultOptions.X;                                            \
   } while (0)
 
-  RESET_OPTION(LessPreciseFPMADOption, "less-precise-fpmad");
   RESET_OPTION(UnsafeFPMath, "unsafe-fp-math");
   RESET_OPTION(NoInfsFPMath, "no-infs-fp-math");
   RESET_OPTION(NoNaNsFPMath, "no-nans-fp-math");
+  RESET_OPTION(NoSignedZerosFPMath, "no-signed-zeros-fp-math");
   RESET_OPTION(NoTrappingFPMath, "no-trapping-math");
 
   StringRef Denormal =
@@ -87,6 +82,8 @@ void TargetMachine::resetTargetOptions(const Function &F) const {
     Options.FPDenormalMode = FPDenormal::PreserveSign;
   else if (Denormal == "positive-zero")
     Options.FPDenormalMode = FPDenormal::PositiveZero;
+  else
+    Options.FPDenormalMode = DefaultOptions.FPDenormalMode;
 }
 
 /// Returns the code generation relocation model. The choices are static, PIC,
@@ -151,10 +148,14 @@ bool TargetMachine::shouldAssumeDSOLocal(const Module &M,
       return true;
 
     bool IsTLS = GV && GV->isThreadLocal();
-    bool IsAccessViaCopyRelocs =
-        Options.MCOptions.MCPIECopyRelocations && GV && isa<GlobalVariable>(GV);
-    // Check if we can use copy relocations.
-    if (!IsTLS && (RM == Reloc::Static || IsAccessViaCopyRelocs))
+    bool IsAccessViaCopyRelocs = Options.MCOptions.MCPIECopyRelocations && GV &&
+                                 isa<GlobalVariable>(GV) &&
+                                 !GV->hasExternalWeakLinkage();
+    Triple::ArchType Arch = TT.getArch();
+    bool IsPPC =
+        Arch == Triple::ppc || Arch == Triple::ppc64 || Arch == Triple::ppc64le;
+    // Check if we can use copy relocations. PowerPC has no copy relocations.
+    if (!IsTLS && !IsPPC && (RM == Reloc::Static || IsAccessViaCopyRelocs))
       return true;
   }
 
@@ -195,7 +196,7 @@ CodeGenOpt::Level TargetMachine::getOptLevel() const { return OptLevel; }
 void TargetMachine::setOptLevel(CodeGenOpt::Level Level) { OptLevel = Level; }
 
 TargetIRAnalysis TargetMachine::getTargetIRAnalysis() {
-  return TargetIRAnalysis([this](const Function &F) {
+  return TargetIRAnalysis([](const Function &F) {
     return TargetTransformInfo(F.getParent()->getDataLayout());
   });
 }

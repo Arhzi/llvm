@@ -28,6 +28,11 @@
 class RISCVInst<dag outs, dag ins, string asmstr, list<dag> pattern>
     : Instruction {
   field bits<32> Inst;
+  // SoftFail is a field the disassembler can use to provide a way for
+  // instructions to not match without killing the whole decode process. It is
+  // mainly used for ARM, but Tablegen expects this field to exist or it fails
+  // to build the decode table.
+  field bits<32> SoftFail = 0;
   let Size = 4;
 
   bits<7> Opcode = 0;
@@ -44,8 +49,9 @@ class RISCVInst<dag outs, dag ins, string asmstr, list<dag> pattern>
 
 // Pseudo instructions
 class Pseudo<dag outs, dag ins, string asmstr, list<dag> pattern>
-    : RISCVInst<outs, ins, asmstr, pattern> {
+    : RISCVInst<outs, ins, "", pattern> {
   let isPseudo = 1;
+  let isCodeGenOnly = 1;
 }
 
 class FR<bits<7> funct7, bits<3> funct3, bits<7> opcode, dag outs, dag ins,

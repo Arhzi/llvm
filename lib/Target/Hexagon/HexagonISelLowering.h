@@ -50,42 +50,24 @@ namespace HexagonISD {
       JT,          // Jump table.
       CP,          // Constant pool.
 
-      POPCOUNT,
       COMBINE,
       PACKHL,
-      VSPLATB,
-      VSPLATH,
-      SHUFFEB,
-      SHUFFEH,
-      SHUFFOB,
-      SHUFFOH,
-      VSXTBH,
-      VSXTBW,
-      VSRAW,
-      VSRAH,
-      VSRLW,
-      VSRLH,
-      VSHLW,
-      VSHLH,
-      VCMPBEQ,
-      VCMPBGT,
-      VCMPBGTU,
-      VCMPHEQ,
-      VCMPHGT,
-      VCMPHGTU,
-      VCMPWEQ,
-      VCMPWGT,
-      VCMPWGTU,
+      VSPLAT,
+      VASL,
+      VASR,
+      VLSR,
 
       INSERT,
       INSERTRP,
       EXTRACTU,
       EXTRACTURP,
       VCOMBINE,
-      VPACK,
+      VPACKE,
+      VPACKO,
       TC_RETURN,
       EH_RETURN,
       DCFETCH,
+      READCYCLE,
 
       OP_END
     };
@@ -131,8 +113,7 @@ namespace HexagonISD {
     bool shouldExpandBuildVectorWithShuffles(EVT VT,
         unsigned DefinedValues) const override;
 
-    bool isShuffleMaskLegal(const SmallVectorImpl<int> &Mask, EVT VT)
-        const override;
+    bool isShuffleMaskLegal(ArrayRef<int> Mask, EVT VT) const override;
 
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
     const char *getTargetNodeName(unsigned Opcode) const override;
@@ -146,6 +127,7 @@ namespace HexagonISD {
     SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINLINEASM(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerPREFETCH(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerREADCYCLECOUNTER(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_LABEL(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const;
     SDValue
@@ -163,7 +145,7 @@ namespace HexagonISD {
     SDValue LowerToTLSLocalExecModel(GlobalAddressSDNode *GA,
         SelectionDAG &DAG) const;
     SDValue GetDynamicTLSAddr(SelectionDAG &DAG, SDValue Chain,
-        GlobalAddressSDNode *GA, SDValue *InFlag, EVT PtrVT,
+        GlobalAddressSDNode *GA, SDValue InFlag, EVT PtrVT,
         unsigned ReturnReg, unsigned char OperandFlags) const;
     SDValue LowerGLOBAL_OFFSET_TABLE(SDValue Op, SelectionDAG &DAG) const;
 
@@ -179,18 +161,21 @@ namespace HexagonISD {
 
     SDValue LowerSETCC(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerVSELECT(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerCTPOP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerATOMIC_FENCE(SDValue Op, SelectionDAG& DAG) const;
     SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerLOAD(SDValue Op, SelectionDAG &DAG) const;
+
+    bool CanLowerReturn(CallingConv::ID CallConv,
+                        MachineFunction &MF, bool isVarArg,
+                        const SmallVectorImpl<ISD::OutputArg> &Outs,
+                        LLVMContext &Context) const override;
 
     SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
                         const SmallVectorImpl<ISD::OutputArg> &Outs,
                         const SmallVectorImpl<SDValue> &OutVals,
                         const SDLoc &dl, SelectionDAG &DAG) const override;
 
-    bool mayBeEmittedAsTailCall(CallInst *CI) const override;
+    bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
 
     /// If a physical register, this returns the register that receives the
     /// exception address on entry to an EH pad.
@@ -245,7 +230,8 @@ namespace HexagonISD {
     /// mode is legal for a load/store of any legal type.
     /// TODO: Handle pre/postinc as well.
     bool isLegalAddressingMode(const DataLayout &DL, const AddrMode &AM,
-                               Type *Ty, unsigned AS) const override;
+                               Type *Ty, unsigned AS,
+                               Instruction *I = nullptr) const override;
     /// Return true if folding a constant offset with the given GlobalAddress
     /// is legal.  It is frequently not legal in PIC relocation models.
     bool isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const override;

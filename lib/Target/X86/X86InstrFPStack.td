@@ -252,7 +252,7 @@ let SchedRW = [WriteFDivLd] in {
 defm DIV : FPBinary<fdiv, MRM6m, "div">;
 defm DIVR: FPBinary<fdiv, MRM7m, "divr", 0>;
 }
-}
+} // Defs = [FPSW]
 
 class FPST0rInst<Format fp, string asm>
   : FPI<0xD8, fp, (outs), (ins RST:$op), asm>;
@@ -615,33 +615,36 @@ let Defs = [AX], Uses = [FPSW] in
 def FNSTSW16r : I<0xDF, MRM_E0,                  // AX = fp flags
                   (outs), (ins), "fnstsw\t{%ax|ax}",
                   [(set AX, (X86fp_stsw FPSW))], IIC_FNSTSW>;
-
+let Defs = [FPSW] in
 def FNSTCW16m : I<0xD9, MRM7m,                   // [mem16] = X87 control world
                   (outs), (ins i16mem:$dst), "fnstcw\t$dst",
                   [(X86fp_cwd_get16 addr:$dst)], IIC_FNSTCW>;
 } // SchedRW
-let mayLoad = 1 in
+let Defs = [FPSW], mayLoad = 1 in
 def FLDCW16m  : I<0xD9, MRM5m,                   // X87 control world = [mem16]
                   (outs), (ins i16mem:$dst), "fldcw\t$dst", [], IIC_FLDCW>,
                 Sched<[WriteLoad]>;
 
 // FPU control instructions
 let SchedRW = [WriteMicrocoded] in {
-let Defs = [FPSW] in
+let Defs = [FPSW] in {
 def FNINIT : I<0xDB, MRM_E3, (outs), (ins), "fninit", [], IIC_FNINIT>;
 def FFREE : FPI<0xDD, MRM0r, (outs), (ins RST:$reg),
                 "ffree\t$reg", IIC_FFREE>;
-// Clear exceptions
+def FFREEP : FPI<0xDF, MRM0r, (outs), (ins RST:$reg),
+                "ffreep\t$reg", IIC_FFREE>;
 
-let Defs = [FPSW] in
+// Clear exceptions
 def FNCLEX : I<0xDB, MRM_E2, (outs), (ins), "fnclex", [], IIC_FNCLEX>;
+} // Defs = [FPSW]
 } // SchedRW
 
 // Operandless floating-point instructions for the disassembler.
 let SchedRW = [WriteMicrocoded] in {
-def WAIT : I<0x9B, RawFrm, (outs), (ins), "wait", [], IIC_WAIT>;
-
 def FNOP : I<0xD9, MRM_D0, (outs), (ins), "fnop", [], IIC_FNOP>;
+
+let Defs = [FPSW] in {
+def WAIT : I<0x9B, RawFrm, (outs), (ins), "wait", [], IIC_WAIT>;
 def FXAM : I<0xD9, MRM_E5, (outs), (ins), "fxam", [], IIC_FXAM>;
 def FLDL2T : I<0xD9, MRM_E9, (outs), (ins), "fldl2t", [], IIC_FLDL>;
 def FLDL2E : I<0xD9, MRM_EA, (outs), (ins), "fldl2e", [], IIC_FLDL>;
@@ -662,18 +665,20 @@ def FSINCOS : I<0xD9, MRM_FB, (outs), (ins), "fsincos", [], IIC_FSINCOS>;
 def FRNDINT : I<0xD9, MRM_FC, (outs), (ins), "frndint", [], IIC_FRNDINT>;
 def FSCALE : I<0xD9, MRM_FD, (outs), (ins), "fscale", [], IIC_FSCALE>;
 def FCOMPP : I<0xDE, MRM_D9, (outs), (ins), "fcompp", [], IIC_FCOMPP>;
+} // Defs = [FPSW]
 
 let Predicates = [HasFXSR] in {
   def FXSAVE : I<0xAE, MRM0m, (outs), (ins opaque512mem:$dst),
-                 "fxsave\t$dst", [(int_x86_fxsave addr:$dst)], IIC_FXSAVE>, TB;
+               "fxsave\t$dst", [(int_x86_fxsave addr:$dst)], IIC_FXSAVE>, TB;
   def FXSAVE64 : RI<0xAE, MRM0m, (outs), (ins opaque512mem:$dst),
-                    "fxsave64\t$dst", [(int_x86_fxsave64 addr:$dst)],
-                    IIC_FXSAVE>, TB, Requires<[In64BitMode]>;
+                 "fxsave64\t$dst", [(int_x86_fxsave64 addr:$dst)],
+                 IIC_FXSAVE>, TB, Requires<[In64BitMode]>;
   def FXRSTOR : I<0xAE, MRM1m, (outs), (ins opaque512mem:$src),
-                "fxrstor\t$src", [(int_x86_fxrstor addr:$src)], IIC_FXRSTOR>, TB;
+                "fxrstor\t$src", [(int_x86_fxrstor addr:$src)], IIC_FXRSTOR>, 
+                TB;
   def FXRSTOR64 : RI<0xAE, MRM1m, (outs), (ins opaque512mem:$src),
-                     "fxrstor64\t$src", [(int_x86_fxrstor64 addr:$src)],
-                     IIC_FXRSTOR>, TB, Requires<[In64BitMode]>;
+                  "fxrstor64\t$src", [(int_x86_fxrstor64 addr:$src)],
+                  IIC_FXRSTOR>, TB, Requires<[In64BitMode]>;
 } // Predicates = [FeatureFXSR]
 } // SchedRW
 

@@ -7,9 +7,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "../lib/CodeGen/AsmPrinter/DwarfStringPool.h"
 #include "DwarfGenerator.h"
+#include "../lib/CodeGen/AsmPrinter/DwarfStringPool.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/DIE.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
@@ -28,7 +29,6 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptionsCommandFlags.h"
 #include "llvm/PassAnalysisSupport.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
@@ -81,8 +81,10 @@ void dwarfgen::DIE::addAttribute(uint16_t A, dwarf::Form Form, const void *P,
   auto &DG = CU->getGenerator();
   DIEBlock *Block = new (DG.getAllocator()) DIEBlock;
   for (size_t I = 0; I < S; ++I)
-    Block->addValue(DG.getAllocator(), (dwarf::Attribute)0,
-                    dwarf::DW_FORM_data1, DIEInteger(((uint8_t *)P)[I]));
+    Block->addValue(
+        DG.getAllocator(), (dwarf::Attribute)0, dwarf::DW_FORM_data1,
+        DIEInteger(
+            (const_cast<uint8_t *>(static_cast<const uint8_t *>(P)))[I]));
 
   Block->ComputeSize(DG.getAsmPrinter());
   Die->addValue(DG.getAllocator(), static_cast<dwarf::Attribute>(A), Form,
@@ -151,7 +153,7 @@ llvm::Error dwarfgen::Generator::init(Triple TheTriple, uint16_t V) {
 
   MOFI.reset(new MCObjectFileInfo);
   MC.reset(new MCContext(MAI.get(), MRI.get(), MOFI.get()));
-  MOFI->InitMCObjectFileInfo(TheTriple, /*PIC*/ false, CodeModel::Default, *MC);
+  MOFI->InitMCObjectFileInfo(TheTriple, /*PIC*/ false, *MC);
 
   MCTargetOptions Options;
   MAB = TheTarget->createMCAsmBackend(*MRI, TripleName, "", Options);
@@ -234,8 +236,14 @@ StringRef dwarfgen::Generator::generate() {
     assert(Length != -1U);
     Asm->EmitInt32(Length);
     Asm->EmitInt16(Version);
-    Asm->EmitInt32(0);
-    Asm->EmitInt8(CU->getAddressSize());
+    if (Version <= 4) {
+      Asm->EmitInt32(0);
+      Asm->EmitInt8(CU->getAddressSize());
+    } else {
+      Asm->EmitInt8(dwarf::DW_UT_compile);
+      Asm->EmitInt8(CU->getAddressSize());
+      Asm->EmitInt32(0);
+    }
     Asm->emitDwarfDIE(*CU->getUnitDIE().Die);
   }
 

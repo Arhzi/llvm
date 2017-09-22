@@ -1,21 +1,21 @@
 ========================
-LLVM 4.0.0 Release Notes
+LLVM 6.0.0 Release Notes
 ========================
 
 .. contents::
     :local:
 
 .. warning::
-   These are in-progress notes for the upcoming LLVM 4.0.0 release.  You may
-   prefer the `LLVM 3.9 Release Notes <http://llvm.org/releases/3.9.0/docs
-   /ReleaseNotes.html>`_.
+   These are in-progress notes for the upcoming LLVM 6 release.
+   Release notes for previous releases can be found on
+   `the Download Page <http://releases.llvm.org/download.html>`_.
 
 
 Introduction
 ============
 
 This document contains the release notes for the LLVM Compiler Infrastructure,
-release 4.0.0.  Here we describe the status of LLVM, including major improvements
+release 5.0.0.  Here we describe the status of LLVM, including major improvements
 from the previous release, improvements in various subprojects of LLVM, and
 some of the current users of the code.  All LLVM releases may be downloaded
 from the `LLVM releases web site <http://llvm.org/releases/>`_.
@@ -33,13 +33,6 @@ page <http://llvm.org/releases/>`_.
 
 Non-comprehensive list of changes in this release
 =================================================
-* The C API functions LLVMAddFunctionAttr, LLVMGetFunctionAttr,
-  LLVMRemoveFunctionAttr, LLVMAddAttribute, LLVMRemoveAttribute,
-  LLVMGetAttribute, LLVMAddInstrAttribute and
-  LLVMRemoveInstrAttribute have been removed.
-
-* The C API enum LLVMAttribute has been deleted.
-
 .. NOTE
    For small 1-3 sentence descriptions, just add an entry at the end of
    this list. If your description won't fit comfortably in one bullet
@@ -47,17 +40,11 @@ Non-comprehensive list of changes in this release
    functionality, or simply have a lot to talk about), see the `NOTE` below
    for adding a new subsection.
 
-* The definition and uses of LLVM_ATRIBUTE_UNUSED_RESULT in the LLVM source
-  were replaced with LLVM_NODISCARD, which matches the C++17 [[nodiscard]]
-  semantics rather than gcc's __attribute__((warn_unused_result)).
+* The ``Redirects`` argument of ``llvm::sys::ExecuteAndWait`` and
+  ``llvm::sys::ExecuteNoWait`` was changed to an ``ArrayRef`` of optional
+  ``StringRef``'s to make it safer and more convenient to use.
 
-* Minimum compiler version to build has been raised to GCC 4.8 and VS 2015.
-
-* The Timer related APIs now expect a Name and Description. When upgrading code
-  the previously used names should become descriptions and a short name in the
-  style of a programming language identifier should be added.
-
-* ... next change ...
+* Note..
 
 .. NOTE
    If you would like to document a larger change, then you can add a
@@ -102,19 +89,22 @@ Changes to the AMDGPU Target
 Changes to the AVR Target
 -----------------------------
 
-* The entire backend has been merged in-tree with all tests passing. All of
-  the instruction selection code and the machine code backend has landed
-  recently and is fully usable.
+ During this release ...
 
 Changes to the OCaml bindings
 -----------------------------
 
-* The attribute API was completely overhauled, following the changes
-  to the C API.
+ During this release ...
 
 
-External Open Source Projects Using LLVM 4.0.0
-==============================================
+Changes to the C API
+--------------------
+
+ During this release ...
+
+
+External Open Source Projects Using LLVM 6
+==========================================
 
 * A project...
 

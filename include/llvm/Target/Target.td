@@ -21,6 +21,56 @@ include "llvm/IR/Intrinsics.td"
 
 class RegisterClass; // Forward def
 
+class HwMode<string FS> {
+  // A string representing subtarget features that turn on this HW mode.
+  // For example, "+feat1,-feat2" will indicate that the mode is active
+  // when "feat1" is enabled and "feat2" is disabled at the same time.
+  // Any other features are not checked.
+  // When multiple modes are used, they should be mutually exclusive,
+  // otherwise the results are unpredictable.
+  string Features = FS;
+}
+
+// A special mode recognized by tablegen. This mode is considered active
+// when no other mode is active. For targets that do not use specific hw
+// modes, this is the only mode.
+def DefaultMode : HwMode<"">;
+
+// A class used to associate objects with HW modes. It is only intended to
+// be used as a base class, where the derived class should contain a member
+// "Objects", which is a list of the same length as the list of modes.
+// The n-th element on the Objects list will be associated with the n-th
+// element on the Modes list.
+class HwModeSelect<list<HwMode> Ms> {
+  list<HwMode> Modes = Ms;
+}
+
+// A common class that implements a counterpart of ValueType, which is
+// dependent on a HW mode. This class inherits from ValueType itself,
+// which makes it possible to use objects of this class where ValueType
+// objects could be used. This is specifically applicable to selection
+// patterns.
+class ValueTypeByHwMode<list<HwMode> Ms, list<ValueType> Ts>
+    : HwModeSelect<Ms>, ValueType<0, 0> {
+  // The length of this list must be the same as the length of Ms.
+  list<ValueType> Objects = Ts;
+}
+
+// A class representing the register size, spill size and spill alignment
+// in bits of a register.
+class RegInfo<int RS, int SS, int SA> {
+  int RegSize = RS;         // Register size in bits.
+  int SpillSize = SS;       // Spill slot size in bits.
+  int SpillAlignment = SA;  // Spill slot alignment in bits.
+}
+
+// The register size/alignment information, parameterized by a HW mode.
+class RegInfoByHwMode<list<HwMode> Ms = [], list<RegInfo> Ts = []>
+    : HwModeSelect<Ms> {
+  // The length of this list must be the same as the length of Ms.
+  list<RegInfo> Objects = Ts;
+}
+
 // SubRegIndex - Use instances of SubRegIndex to identify subregisters.
 class SubRegIndex<int size, int offset = 0> {
   string Namespace = "";
@@ -155,6 +205,9 @@ class RegisterClass<string namespace, list<ValueType> regTypes, int alignment,
                     dag regList, RegAltNameIndex idx = NoRegAltName>
   : DAGOperand {
   string Namespace = namespace;
+
+  // The register size/alignment information, parameterized by a HW mode.
+  RegInfoByHwMode RegInfos;
 
   // RegType - Specify the list ValueType of the registers in this register
   // class.  Note that all registers in a register class must have the same
@@ -402,11 +455,8 @@ class Instruction {
                             // If so, make sure to override
                             // TargetInstrInfo::getInsertSubregLikeInputs.
 
-  // Side effect flags - When set, the flags have these meanings:
-  //
-  //  hasSideEffects - The instruction has side effects that are not
-  //    captured by any operands of the instruction or other flags.
-  //
+  // Does the instruction have side effects that are not captured by any
+  // operands of the instruction or other flags?
   bit hasSideEffects = ?;
 
   // Is this instruction a "real" instruction (with a distinct machine
@@ -533,6 +583,12 @@ class Predicate<string cond> {
   /// PredicateName - User-level name to use for the predicate. Mainly for use
   /// in diagnostics such as missing feature errors in the asm matcher.
   string PredicateName = "";
+
+  /// Setting this to '1' indicates that the predicate must be recomputed on
+  /// every function change. Most predicates can leave this at '0'.
+  ///
+  /// Ignored by SelectionDAG, it always recomputes the predicate on every use.
+  bit RecomputePerFunction = 0;
 }
 
 /// NoHonorSignDependentRounding - This predicate is true if support for
@@ -677,6 +733,11 @@ class RegisterOperand<RegisterClass regclass, string pm = "printOperand">
   // this type. The method normally will just use an alt-name index to look
   // up the name to print. Default to the generic printOperand().
   string PrintMethod = pm;
+
+  // EncoderMethod - The target method name to call to encode this register
+  // operand.
+  string EncoderMethod = "";
+
   // ParserMatchClass - The "match class" that operands of this type fit
   // in. Match classes are used to define the order in which instructions are
   // match, to ensure that which instructions gets matched is deterministic.
@@ -832,6 +893,13 @@ def GC_LABEL : Instruction {
   let hasCtrlDep = 1;
   let isNotDuplicable = 1;
 }
+def ANNOTATION_LABEL : Instruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins i32imm:$id);
+  let AsmString = "";
+  let hasCtrlDep = 1;
+  let isNotDuplicable = 1;
+}
 def KILL : Instruction {
   let OutOperandList = (outs);
   let InOperandList = (ins variable_ops);
@@ -951,11 +1019,12 @@ def LOCAL_ESCAPE : Instruction {
   let hasSideEffects = 0;
   let hasCtrlDep = 1;
 }
-def FAULTING_LOAD_OP : Instruction {
+def FAULTING_OP : Instruction {
   let OutOperandList = (outs unknown:$dst);
   let InOperandList = (ins variable_ops);
   let usesCustomInserter = 1;
   let mayLoad = 1;
+  let mayStore = 1;
   let isTerminator = 1;
   let isBranch = 1;
 }
@@ -997,6 +1066,25 @@ def PATCHABLE_TAIL_CALL : Instruction {
   let usesCustomInserter = 1;
   let hasSideEffects = 1;
   let isReturn = 1;
+}
+def PATCHABLE_EVENT_CALL : Instruction {
+  let OutOperandList = (outs);
+  let InOperandList = (ins ptr_rc:$event, i8imm:$size);
+  let AsmString = "# XRay Custom Event Log.";
+  let usesCustomInserter = 1;
+  let isCall = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasSideEffects = 1;
+}
+def FENTRY_CALL : Instruction {
+  let OutOperandList = (outs unknown:$dst);
+  let InOperandList = (ins variable_ops);
+  let AsmString = "# FEntry call";
+  let usesCustomInserter = 1;
+  let mayLoad = 1;
+  let mayStore = 1;
+  let hasSideEffects = 1;
 }
 
 // Generic opcodes used in GlobalISel.
@@ -1340,3 +1428,18 @@ include "llvm/Target/TargetCallingConv.td"
 // Pull in the common support for DAG isel generation.
 //
 include "llvm/Target/TargetSelectionDAG.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for Global ISel register bank info generation.
+//
+include "llvm/Target/GlobalISel/RegisterBank.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for DAG isel generation.
+//
+include "llvm/Target/GlobalISel/Target.td"
+
+//===----------------------------------------------------------------------===//
+// Pull in the common support for the Global ISel DAG-based selector generation.
+//
+include "llvm/Target/GlobalISel/SelectionDAGCompat.td"

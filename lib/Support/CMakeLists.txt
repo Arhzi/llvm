@@ -9,6 +9,9 @@ elseif( CMAKE_HOST_UNIX )
   if( HAVE_LIBDL )
     set(system_libs ${system_libs} ${CMAKE_DL_LIBS})
   endif()
+  if( HAVE_BACKTRACE )
+    set(system_libs ${system_libs} ${Backtrace_LIBRARIES})
+  endif()
   if(LLVM_ENABLE_TERMINFO)
     if(HAVE_TERMINFO)
       set(system_libs ${system_libs} ${TERMINFO_LIBS})
@@ -17,7 +20,7 @@ elseif( CMAKE_HOST_UNIX )
   if( LLVM_ENABLE_THREADS AND HAVE_LIBATOMIC )
     set(system_libs ${system_libs} atomic)
   endif()
-  set(system_libs ${system_libs} ${PTHREAD_LIB})
+  set(system_libs ${system_libs} ${LLVM_PTHREAD_LIB})
   if ( LLVM_ENABLE_ZLIB AND HAVE_LIBZ )
     set(system_libs ${system_libs} z)
   endif()
@@ -27,12 +30,18 @@ elseif( CMAKE_HOST_UNIX )
 endif( MSVC OR MINGW )
 
 add_llvm_library(LLVMSupport
+  AMDGPUCodeObjectMetadata.cpp
   APFloat.cpp
   APInt.cpp
   APSInt.cpp
   ARMBuildAttrs.cpp
+  ARMAttributeParser.cpp
   ARMWinEH.cpp
   Allocator.cpp
+  BinaryStreamError.cpp
+  BinaryStreamReader.cpp
+  BinaryStreamRef.cpp
+  BinaryStreamWriter.cpp
   BlockFrequency.cpp
   BranchProbability.cpp
   CachePruning.cpp
@@ -46,9 +55,9 @@ add_llvm_library(LLVMSupport
   CrashRecoveryContext.cpp
   DataExtractor.cpp
   Debug.cpp
+  DebugCounter.cpp
   DeltaAlgorithm.cpp
   DAGDeltaAlgorithm.cpp
-  Dwarf.cpp
   Error.cpp
   ErrorHandling.cpp
   FileUtilities.cpp
@@ -61,18 +70,20 @@ add_llvm_library(LLVMSupport
   Hashing.cpp
   IntEqClasses.cpp
   IntervalMap.cpp
-  IntrusiveRefCntPtr.cpp
   JamCRC.cpp
+  KnownBits.cpp
   LEB128.cpp
   LineIterator.cpp
   Locale.cpp
   LockFileManager.cpp
+  LowLevelType.cpp
   ManagedStatic.cpp
   MathExtras.cpp
   MemoryBuffer.cpp
   MD5.cpp
   NativeFormatting.cpp
   Options.cpp
+  Parallel.cpp
   PluginLoader.cpp
   PrettyStackTrace.cpp
   RandomNumberGenerator.cpp
@@ -91,6 +102,7 @@ add_llvm_library(LLVMSupport
   StringSaver.cpp
   StringRef.cpp
   SystemUtils.cpp
+  TarWriter.cpp
   TargetParser.cpp
   ThreadPool.cpp
   Timer.cpp
@@ -121,7 +133,6 @@ add_llvm_library(LLVMSupport
   Process.cpp
   Program.cpp
   RWMutex.cpp
-  SearchForAddressOfSpecialSymbol.cpp
   Signals.cpp
   TargetRegistry.cpp
   ThreadLocal.cpp
@@ -134,7 +145,7 @@ add_llvm_library(LLVMSupport
   Windows
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/ADT
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Support
-
+  ${Backtrace_INCLUDE_DIRS}
   LINK_LIBS ${system_libs}
   )
 

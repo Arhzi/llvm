@@ -38,7 +38,9 @@ Unit FileToVector(const std::string &Path, size_t MaxSize, bool ExitOnError) {
   }
 
   T.seekg(0, T.end);
-  size_t FileLen = T.tellg();
+  auto EndPos = T.tellg();
+  if (EndPos < 0) return {};
+  size_t FileLen = EndPos;
   if (MaxSize)
     FileLen = std::min(FileLen, MaxSize);
 
@@ -96,14 +98,15 @@ void DupAndCloseStderr() {
     if (NewOutputFile) {
       OutputFile = NewOutputFile;
       if (EF->__sanitizer_set_report_fd)
-        EF->__sanitizer_set_report_fd(reinterpret_cast<void *>(OutputFd));
-      CloseFile(2);
+        EF->__sanitizer_set_report_fd(
+            reinterpret_cast<void *>(GetHandleFromFd(OutputFd)));
+      DiscardOutput(2);
     }
   }
 }
 
 void CloseStdout() {
-  CloseFile(1);
+  DiscardOutput(1);
 }
 
 void Printf(const char *Fmt, ...) {

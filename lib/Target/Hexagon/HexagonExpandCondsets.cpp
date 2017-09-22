@@ -1,4 +1,4 @@
-//===--- HexagonExpandCondsets.cpp ----------------------------------------===//
+//===- HexagonExpandCondsets.cpp ------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -86,9 +86,8 @@
 // however, is that finding the locations where the implicit uses need
 // to be added, and updating the live ranges will be more involved.
 
-#define DEBUG_TYPE "expand-condsets"
-
 #include "HexagonInstrInfo.h"
+#include "HexagonRegisterInfo.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -105,16 +104,21 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/Function.h"
+#include "llvm/MC/LaneBitmask.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegisterInfo.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <iterator>
 #include <set>
 #include <utility>
+
+#define DEBUG_TYPE "expand-condsets"
 
 using namespace llvm;
 
@@ -136,10 +140,7 @@ namespace {
   public:
     static char ID;
 
-    HexagonExpandCondsets() :
-        MachineFunctionPass(ID), HII(nullptr), TRI(nullptr), MRI(nullptr),
-        LIS(nullptr), CoaLimitActive(false),
-        TfrLimitActive(false), CoaCounter(0), TfrCounter(0) {
+    HexagonExpandCondsets() : MachineFunctionPass(ID) {
       if (OptCoaLimit.getPosition())
         CoaLimitActive = true, CoaLimit = OptCoaLimit;
       if (OptTfrLimit.getPosition())
@@ -161,14 +162,17 @@ namespace {
     bool runOnMachineFunction(MachineFunction &MF) override;
 
   private:
-    const HexagonInstrInfo *HII;
-    const TargetRegisterInfo *TRI;
+    const HexagonInstrInfo *HII = nullptr;
+    const TargetRegisterInfo *TRI = nullptr;
     MachineDominatorTree *MDT;
-    MachineRegisterInfo *MRI;
-    LiveIntervals *LIS;
-
-    bool CoaLimitActive, TfrLimitActive;
-    unsigned CoaLimit, TfrLimit, CoaCounter, TfrCounter;
+    MachineRegisterInfo *MRI = nullptr;
+    LiveIntervals *LIS = nullptr;
+    bool CoaLimitActive = false;
+    bool TfrLimitActive = false;
+    unsigned CoaLimit;
+    unsigned TfrLimit;
+    unsigned CoaCounter = 0;
+    unsigned TfrCounter = 0;
 
     struct RegisterRef {
       RegisterRef(const MachineOperand &Op) : Reg(Op.getReg()),
@@ -186,9 +190,10 @@ namespace {
       unsigned Reg, Sub;
     };
 
-    typedef DenseMap<unsigned,unsigned> ReferenceMap;
+    using ReferenceMap = DenseMap<unsigned, unsigned>;
     enum { Sub_Low = 0x1, Sub_High = 0x2, Sub_None = (Sub_Low | Sub_High) };
     enum { Exec_Then = 0x10, Exec_Else = 0x20 };
+
     unsigned getMaskForSub(unsigned Sub);
     bool isCondset(const MachineInstr &MI);
     LaneBitmask getLaneMask(unsigned Reg, unsigned Sub);
@@ -362,14 +367,16 @@ void HexagonExpandCondsets::updateDeadsInRange(unsigned Reg, LaneBitmask LM,
   if (Range.empty())
     return;
 
-  auto IsRegDef = [this,Reg,LM] (MachineOperand &Op) -> bool {
+  // Return two booleans: { def-modifes-reg, def-covers-reg }.
+  auto IsRegDef = [this,Reg,LM] (MachineOperand &Op) -> std::pair<bool,bool> {
     if (!Op.isReg() || !Op.isDef())
-      return false;
+      return { false, false };
     unsigned DR = Op.getReg(), DSR = Op.getSubReg();
     if (!TargetRegisterInfo::isVirtualRegister(DR) || DR != Reg)
-      return false;
+      return { false, false };
     LaneBitmask SLM = getLaneMask(DR, DSR);
-    return (SLM & LM).any();
+    LaneBitmask A = SLM & LM;
+    return { A.any(), A == SLM };
   };
 
   // The splitting step will create pairs of predicated definitions without
@@ -453,20 +460,27 @@ void HexagonExpandCondsets::updateDeadsInRange(unsigned Reg, LaneBitmask LM,
   // Remove <dead> flags from all defs that are not dead after live range
   // extension, and collect all def operands. They will be used to generate
   // the necessary implicit uses.
+  // At the same time, add <dead> flag to all defs that are actually dead.
+  // This can happen, for example, when a mux with identical inputs is
+  // replaced with a COPY: the use of the predicate register disappears and
+  // the dead can become dead.
   std::set<RegisterRef> DefRegs;
   for (auto &Seg : Range) {
     if (!Seg.start.isRegister())
       continue;
     MachineInstr *DefI = LIS->getInstructionFromIndex(Seg.start);
     for (auto &Op : DefI->operands()) {
-      if (Seg.start.isDead() || !IsRegDef(Op))
-        continue;
-      DefRegs.insert(Op);
-      Op.setIsDead(false);
+      auto P = IsRegDef(Op);
+      if (P.second && Seg.end.isDead()) {
+        Op.setIsDead(true);
+      } else if (P.first) {
+        DefRegs.insert(Op);
+        Op.setIsDead(false);
+      }
     }
   }
 
-  // Finally, add implicit uses to each predicated def that is reached
+  // Now, add implicit uses to each predicated def that is reached
   // by other defs.
   for (auto &Seg : Range) {
     if (!Seg.start.isRegister() || !Range.liveAt(Seg.start.getPrevSlot()))
@@ -475,16 +489,32 @@ void HexagonExpandCondsets::updateDeadsInRange(unsigned Reg, LaneBitmask LM,
     if (!HII->isPredicated(*DefI))
       continue;
     // Construct the set of all necessary implicit uses, based on the def
-    // operands in the instruction.
-    std::set<RegisterRef> ImpUses;
-    for (auto &Op : DefI->operands())
-      if (Op.isReg() && Op.isDef() && DefRegs.count(Op))
-        ImpUses.insert(Op);
+    // operands in the instruction. We need to tie the implicit uses to
+    // the corresponding defs.
+    std::map<RegisterRef,unsigned> ImpUses;
+    for (unsigned i = 0, e = DefI->getNumOperands(); i != e; ++i) {
+      MachineOperand &Op = DefI->getOperand(i);
+      if (!Op.isReg() || !DefRegs.count(Op))
+        continue;
+      if (Op.isDef()) {
+        ImpUses.insert({Op, i});
+      } else {
+        // This function can be called for the same register with different
+        // lane masks. If the def in this instruction was for the whole
+        // register, we can get here more than once. Avoid adding multiple
+        // implicit uses (or adding an implicit use when an explicit one is
+        // present).
+        ImpUses.erase(Op);
+      }
+    }
     if (ImpUses.empty())
       continue;
     MachineFunction &MF = *DefI->getParent()->getParent();
-    for (RegisterRef R : ImpUses)
+    for (std::pair<RegisterRef, unsigned> P : ImpUses) {
+      RegisterRef R = P.first;
       MachineInstrBuilder(MF, DefI).addReg(R.Reg, RegState::Implicit, R.Sub);
+      DefI->tieOperands(P.second, DefI->getNumOperands()-1);
+    }
   }
 }
 
@@ -549,16 +579,27 @@ unsigned HexagonExpandCondsets::getCondTfrOpcode(const MachineOperand &SO,
     }
     unsigned PhysS = (RS.Sub == 0) ? PhysR : TRI->getSubReg(PhysR, RS.Sub);
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(PhysS);
-    switch (RC->getSize()) {
-      case 4:
+    switch (TRI->getRegSizeInBits(*RC)) {
+      case 32:
         return IfTrue ? A2_tfrt : A2_tfrf;
-      case 8:
+      case 64:
         return IfTrue ? A2_tfrpt : A2_tfrpf;
     }
     llvm_unreachable("Invalid register operand");
   }
-  if (SO.isImm() || SO.isFPImm())
-    return IfTrue ? C2_cmoveit : C2_cmoveif;
+  switch (SO.getType()) {
+    case MachineOperand::MO_Immediate:
+    case MachineOperand::MO_FPImmediate:
+    case MachineOperand::MO_ConstantPoolIndex:
+    case MachineOperand::MO_TargetIndex:
+    case MachineOperand::MO_JumpTableIndex:
+    case MachineOperand::MO_ExternalSymbol:
+    case MachineOperand::MO_GlobalAddress:
+    case MachineOperand::MO_BlockAddress:
+      return IfTrue ? C2_cmoveit : C2_cmoveif;
+    default:
+      break;
+  }
   llvm_unreachable("Unexpected source operand");
 }
 
@@ -595,9 +636,9 @@ MachineInstr *HexagonExpandCondsets::genCondTfrFor(MachineOperand &SrcOp,
           .addReg(SrcOp.getReg(), SrcState, SrcOp.getSubReg());
   } else {
     MIB = BuildMI(B, At, DL, HII->get(Opc))
-          .addReg(DstR, DstState, DstSR)
-          .addReg(PredOp.getReg(), PredState, PredOp.getSubReg())
-          .addOperand(SrcOp);
+              .addReg(DstR, DstState, DstSR)
+              .addReg(PredOp.getReg(), PredState, PredOp.getSubReg())
+              .add(SrcOp);
   }
 
   DEBUG(dbgs() << "created an initial copy: " << *MIB);
@@ -622,6 +663,12 @@ bool HexagonExpandCondsets::split(MachineInstr &MI,
   bool ReadUndef = MD.isUndef();
   MachineBasicBlock::iterator At = MI;
 
+  auto updateRegs = [&UpdRegs] (const MachineInstr &MI) -> void {
+    for (auto &Op : MI.operands())
+      if (Op.isReg())
+        UpdRegs.insert(Op.getReg());
+  };
+
   // If this is a mux of the same register, just replace it with COPY.
   // Ideally, this would happen earlier, so that register coalescing would
   // see it.
@@ -630,6 +677,8 @@ bool HexagonExpandCondsets::split(MachineInstr &MI,
   if (ST.isReg() && SF.isReg()) {
     RegisterRef RT(ST);
     if (RT == RegisterRef(SF)) {
+      // Copy regs to update first.
+      updateRegs(MI);
       MI.setDesc(HII->get(TargetOpcode::COPY));
       unsigned S = getRegState(ST);
       while (MI.getNumOperands() > 1)
@@ -651,9 +700,7 @@ bool HexagonExpandCondsets::split(MachineInstr &MI,
   LIS->InsertMachineInstrInMaps(*TfrF);
 
   // Will need to recalculate live intervals for all registers in MI.
-  for (auto &Op : MI.operands())
-    if (Op.isReg())
-      UpdRegs.insert(Op.getReg());
+  updateRegs(MI);
 
   removeInstr(MI);
   return true;
@@ -828,7 +875,7 @@ void HexagonExpandCondsets::predicateAt(const MachineOperand &DefOp,
   while (Ox < NP) {
     MachineOperand &MO = MI.getOperand(Ox);
     if (!MO.isReg() || !MO.isImplicit())
-      MB.addOperand(MO);
+      MB.add(MO);
     Ox++;
   }
 
@@ -1106,7 +1153,7 @@ bool HexagonExpandCondsets::coalesceRegisters(RegisterRef R1, RegisterRef R2) {
   MRI->replaceRegWith(R2.Reg, R1.Reg);
 
   // Move all live segments from L2 to L1.
-  typedef DenseMap<VNInfo*,VNInfo*> ValueInfoMap;
+  using ValueInfoMap = DenseMap<VNInfo *, VNInfo *>;
   ValueInfoMap VM;
   for (LiveInterval::iterator I = L2.begin(), E = L2.end(); I != E; ++I) {
     VNInfo *NewVN, *OldVN = I->valno;

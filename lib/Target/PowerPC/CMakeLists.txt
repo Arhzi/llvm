@@ -16,6 +16,7 @@ add_llvm_target(PowerPCCodeGen
   PPCBoolRetToInt.cpp
   PPCAsmPrinter.cpp
   PPCBranchSelector.cpp
+  PPCBranchCoalescing.cpp
   PPCCCState.cpp
   PPCCTRLoops.cpp
   PPCHazardRecognizers.cpp
@@ -40,6 +41,7 @@ add_llvm_target(PowerPCCodeGen
   PPCVSXCopy.cpp
   PPCVSXFMAMutate.cpp
   PPCVSXSwapRemoval.cpp
+  PPCExpandISEL.cpp
   )
 
 add_subdirectory(AsmParser)

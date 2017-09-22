@@ -35,6 +35,7 @@ add_llvm_target(HexagonCodeGen
   HexagonInstrInfo.cpp
   HexagonISelDAGToDAG.cpp
   HexagonISelLowering.cpp
+  HexagonLoopIdiomRecognition.cpp
   HexagonMachineFunctionInfo.cpp
   HexagonMachineScheduler.cpp
   HexagonMCInstLower.cpp
@@ -52,16 +53,17 @@ add_llvm_target(HexagonCodeGen
   HexagonTargetMachine.cpp
   HexagonTargetObjectFile.cpp
   HexagonTargetTransformInfo.cpp
+  HexagonVectorLoopCarriedReuse.cpp
   HexagonVectorPrint.cpp
   HexagonVLIWPacketizer.cpp
   RDFCopy.cpp
   RDFDeadCode.cpp
   RDFGraph.cpp
   RDFLiveness.cpp
-  )
+  RDFRegisters.cpp
+)
 
 add_subdirectory(AsmParser)
 add_subdirectory(TargetInfo)
 add_subdirectory(MCTargetDesc)
 add_subdirectory(Disassembler)
-

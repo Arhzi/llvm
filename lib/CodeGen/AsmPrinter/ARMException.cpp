@@ -14,6 +14,7 @@
 #include "DwarfException.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -27,7 +28,6 @@
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Target/TargetFrameLowering.h"
 #include "llvm/Target/TargetOptions.h"
@@ -43,13 +43,6 @@ ARMTargetStreamer &ARMException::getTargetStreamer() {
   return static_cast<ARMTargetStreamer &>(TS);
 }
 
-/// endModule - Emit all exception information that should come after the
-/// content.
-void ARMException::endModule() {
-  if (shouldEmitCFI)
-    Asm->OutStreamer->EmitCFISections(false, true);
-}
-
 void ARMException::beginFunction(const MachineFunction *MF) {
   if (Asm->MAI->getExceptionHandlingType() == ExceptionHandling::ARM)
     getTargetStreamer().emitFnStart();
@@ -57,7 +50,14 @@ void ARMException::beginFunction(const MachineFunction *MF) {
   AsmPrinter::CFIMoveType MoveType = Asm->needsCFIMoves();
   assert(MoveType != AsmPrinter::CFI_M_EH &&
          "non-EH CFI not yet supported in prologue with EHABI lowering");
+
   if (MoveType == AsmPrinter::CFI_M_Debug) {
+    if (!hasEmittedCFISections) {
+      if (Asm->needsOnlyDebugCFIMoves())
+        Asm->OutStreamer->EmitCFISections(false, true);
+      hasEmittedCFISections = true;
+    }
+
     shouldEmitCFI = true;
     Asm->OutStreamer->EmitCFIStartProc(false);
   }

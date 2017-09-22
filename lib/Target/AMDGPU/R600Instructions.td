@@ -38,9 +38,7 @@ class InstFlag<string PM = "printOperand", int Default = 0>
 }
 
 // src_sel for ALU src operands, see also ALU_CONST, ALU_PARAM registers
-def SEL : OperandWithDefaultOps <i32, (ops (i32 -1))> {
-  let PrintMethod = "printSel";
-}
+def SEL : OperandWithDefaultOps <i32, (ops (i32 -1))>;
 def BANK_SWIZZLE : OperandWithDefaultOps <i32, (ops (i32 0))> {
   let PrintMethod = "printBankSwizzle";
 }
@@ -316,7 +314,7 @@ class VTX_READ <string name, dag outs, list<dag> pattern>
 class LoadParamFrag <PatFrag load_type> : PatFrag <
   (ops node:$ptr), (load_type node:$ptr),
   [{ return isConstantLoad(cast<LoadSDNode>(N), 0) ||
-            (cast<LoadSDNode>(N)->getAddressSpace() == AMDGPUAS::PARAM_I_ADDRESS); }]
+            (cast<LoadSDNode>(N)->getAddressSpace() == AMDGPUASI.PARAM_I_ADDRESS); }]
 >;
 
 def vtx_id3_az_extloadi8 : LoadParamFrag<az_extloadi8>;
@@ -326,8 +324,8 @@ def vtx_id3_load : LoadParamFrag<load>;
 class LoadVtxId1 <PatFrag load> : PatFrag <
   (ops node:$ptr), (load node:$ptr), [{
   const MemSDNode *LD = cast<MemSDNode>(N);
-  return LD->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS ||
-         (LD->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS &&
+  return LD->getAddressSpace() == AMDGPUASI.GLOBAL_ADDRESS ||
+         (LD->getAddressSpace() == AMDGPUASI.CONSTANT_ADDRESS &&
            !isa<GlobalValue>(GetUnderlyingObject(
            LD->getMemOperand()->getValue(), CurDAG->getDataLayout())));
 }]>;
@@ -339,7 +337,7 @@ def vtx_id1_load : LoadVtxId1 <load>;
 class LoadVtxId2 <PatFrag load> : PatFrag <
   (ops node:$ptr), (load node:$ptr), [{
   const MemSDNode *LD = cast<MemSDNode>(N);
-  return LD->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS &&
+  return LD->getAddressSpace() == AMDGPUASI.CONSTANT_ADDRESS &&
          isa<GlobalValue>(GetUnderlyingObject(
          LD->getMemOperand()->getValue(), CurDAG->getDataLayout()));
 }]>;
@@ -661,6 +659,60 @@ let Predicates = [isR600toCayman] in {
 // Common Instructions R600, R700, Evergreen, Cayman
 //===----------------------------------------------------------------------===//
 
+let isCodeGenOnly = 1, isPseudo = 1 in {
+
+let usesCustomInserter = 1  in {
+
+class CLAMP <RegisterClass rc> : AMDGPUShaderInst <
+  (outs rc:$dst),
+  (ins rc:$src0),
+  "CLAMP $dst, $src0",
+  [(set f32:$dst, (AMDGPUclamp f32:$src0))]
+>;
+
+class FABS <RegisterClass rc> : AMDGPUShaderInst <
+  (outs rc:$dst),
+  (ins rc:$src0),
+  "FABS $dst, $src0",
+  [(set f32:$dst, (fabs f32:$src0))]
+>;
+
+class FNEG <RegisterClass rc> : AMDGPUShaderInst <
+  (outs rc:$dst),
+  (ins rc:$src0),
+  "FNEG $dst, $src0",
+  [(set f32:$dst, (fneg f32:$src0))]
+>;
+
+} // usesCustomInserter = 1
+
+multiclass RegisterLoadStore <RegisterClass dstClass, Operand addrClass,
+                    ComplexPattern addrPat> {
+let UseNamedOperandTable = 1 in {
+
+  def RegisterLoad : AMDGPUShaderInst <
+    (outs dstClass:$dst),
+    (ins addrClass:$addr, i32imm:$chan),
+    "RegisterLoad $dst, $addr",
+    [(set i32:$dst, (AMDGPUregister_load addrPat:$addr, (i32 timm:$chan)))]
+  > {
+    let isRegisterLoad = 1;
+  }
+
+  def RegisterStore : AMDGPUShaderInst <
+    (outs),
+    (ins dstClass:$val, addrClass:$addr, i32imm:$chan),
+    "RegisterStore $val, $addr",
+    [(AMDGPUregister_store i32:$val, addrPat:$addr, (i32 timm:$chan))]
+  > {
+    let isRegisterStore = 1;
+  }
+}
+}
+
+} // End isCodeGenOnly = 1, isPseudo = 1
+
+
 def ADD : R600_2OP_Helper <0x0, "ADD", fadd>;
 // Non-IEEE MUL: 0 * anything = 0
 def MUL : R600_2OP_Helper <0x1, "MUL NON-IEEE">;
@@ -726,6 +778,20 @@ def RNDNE : R600_1OP_Helper <0x13, "RNDNE", frint>;
 def FLOOR : R600_1OP_Helper <0x14, "FLOOR", ffloor>;
 
 def MOV : R600_1OP <0x19, "MOV", []>;
+
+
+// This is a hack to get rid of DUMMY_CHAIN nodes.
+// Most DUMMY_CHAINs should be eliminated during legalization, but undef
+// values can sneak in some to selection.
+let isPseudo = 1, isCodeGenOnly = 1 in {
+def DUMMY_CHAIN : AMDGPUInst <
+  (outs),
+  (ins),
+  "DUMMY_CHAIN",
+  [(R600dummy_chain)]
+>;
+} // end let isPseudo = 1, isCodeGenOnly = 1
+
 
 let isPseudo = 1, isCodeGenOnly = 1, usesCustomInserter = 1 in {
 
@@ -999,7 +1065,7 @@ multiclass CUBE_Common <bits<11> inst> {
     (outs R600_Reg128:$dst),
     (ins R600_Reg128:$src0),
     "CUBE $dst $src0",
-    [(set v4f32:$dst, (int_AMDGPU_cube v4f32:$src0))],
+    [(set v4f32:$dst, (int_r600_cube v4f32:$src0))],
     VecALU
   > {
     let isPseudo = 1;
@@ -1267,6 +1333,17 @@ let Predicates = [isR600] in {
 //===----------------------------------------------------------------------===//
 
 defm R600_ : RegisterLoadStore <R600_Reg32, FRAMEri, ADDRIndirect>;
+
+// Hardcode channel to 0
+// NOTE: LSHR is not available here. LSHR is per family instruction
+def : Pat <
+  (i32 (load_private ADDRIndirect:$addr) ),
+  (R600_RegisterLoad FRAMEri:$addr, (i32 0))
+>;
+def : Pat <
+  (store_private i32:$val, ADDRIndirect:$addr),
+  (R600_RegisterStore i32:$val, FRAMEri:$addr, (i32 0))
+>;
 
 
 //===----------------------------------------------------------------------===//

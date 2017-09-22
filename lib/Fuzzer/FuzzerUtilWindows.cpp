@@ -22,13 +22,15 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <windows.h>
+
+// This must be included after windows.h.
 #include <Psapi.h>
 
 namespace fuzzer {
 
 static const FuzzingOptions* HandlerOpt = nullptr;
 
-LONG CALLBACK ExceptionHandler(PEXCEPTION_POINTERS ExceptionInfo) {
+static LONG CALLBACK ExceptionHandler(PEXCEPTION_POINTERS ExceptionInfo) {
   switch (ExceptionInfo->ExceptionRecord->ExceptionCode) {
     case EXCEPTION_ACCESS_VIOLATION:
     case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
@@ -58,6 +60,7 @@ LONG CALLBACK ExceptionHandler(PEXCEPTION_POINTERS ExceptionInfo) {
       if (HandlerOpt->HandleFpe)
         Fuzzer::StaticCrashSignalCallback();
       break;
+    // TODO: handle (Options.HandleXfsz)
   }
   return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -125,10 +128,7 @@ void SetSignalHandler(const FuzzingOptions& Options) {
 
   if (Options.HandleSegv || Options.HandleBus || Options.HandleIll ||
       Options.HandleFpe)
-    if (!AddVectoredExceptionHandler(1, ExceptionHandler)) {
-      Printf("libFuzzer: AddVectoredExceptionHandler failed.\n");
-      exit(1);
-    }
+    SetUnhandledExceptionFilter(ExceptionHandler);
 
   if (Options.HandleAbrt)
     if (SIG_ERR == signal(SIGABRT, CrashHandler)) {
@@ -175,6 +175,17 @@ const void *SearchMemory(const void *Data, size_t DataLen, const void *Patt,
       return It;
 
   return NULL;
+}
+
+std::string DisassembleCmd(const std::string &FileName) {
+  if (ExecuteCommand("dumpbin /summary > nul") == 0)
+    return "dumpbin /disasm " + FileName;
+  Printf("libFuzzer: couldn't find tool to disassemble (dumpbin)\n");
+  exit(1);
+}
+
+std::string SearchRegexCmd(const std::string &Regex) {
+  return "findstr /r \"" + Regex + "\"";
 }
 
 } // namespace fuzzer

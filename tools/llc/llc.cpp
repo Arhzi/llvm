@@ -62,6 +62,9 @@ static cl::opt<std::string>
 InputFilename(cl::Positional, cl::desc("<input bitcode>"), cl::init("-"));
 
 static cl::opt<std::string>
+InputLanguage("x", cl::desc("Input language ('ir' or 'mir')"));
+
+static cl::opt<std::string>
 OutputFilename("o", cl::desc("Output filename"), cl::value_desc("filename"));
 
 static cl::opt<unsigned>
@@ -89,6 +92,11 @@ OptLevel("O",
 
 static cl::opt<std::string>
 TargetTriple("mtriple", cl::desc("Override target triple for module"));
+
+static cl::opt<std::string> SplitDwarfFile(
+    "split-dwarf-file",
+    cl::desc(
+        "Specify the name of the .dwo file to encode in the DWARF output"));
 
 static cl::opt<bool> NoVerify("disable-verify", cl::Hidden,
                               cl::desc("Do not verify input module"));
@@ -118,21 +126,22 @@ static cl::opt<bool> DiscardValueNames(
     cl::desc("Discard names from Value (other than GlobalValue)."),
     cl::init(false), cl::Hidden);
 
-static cl::opt<std::string> StopBefore("stop-before",
-    cl::desc("Stop compilation before a specific pass"),
-    cl::value_desc("pass-name"), cl::init(""));
+static cl::list<std::string> IncludeDirs("I", cl::desc("include search path"));
 
-static cl::opt<std::string> StopAfter("stop-after",
-    cl::desc("Stop compilation after a specific pass"),
-    cl::value_desc("pass-name"), cl::init(""));
+static cl::opt<bool> PassRemarksWithHotness(
+    "pass-remarks-with-hotness",
+    cl::desc("With PGO, include profile count in optimization remarks"),
+    cl::Hidden);
 
-static cl::opt<std::string> StartBefore("start-before",
-    cl::desc("Resume compilation before a specific pass"),
-    cl::value_desc("pass-name"), cl::init(""));
+static cl::opt<unsigned> PassRemarksHotnessThreshold(
+    "pass-remarks-hotness-threshold",
+    cl::desc("Minimum profile count required for an optimization remark to be output"),
+    cl::Hidden);
 
-static cl::opt<std::string> StartAfter("start-after",
-    cl::desc("Resume compilation after a specific pass"),
-    cl::value_desc("pass-name"), cl::init(""));
+static cl::opt<std::string>
+    RemarksFilename("pass-remarks-output",
+                    cl::desc("YAML output filename for pass remarks"),
+                    cl::value_desc("filename"));
 
 namespace {
 static ManagedStatic<std::vector<std::string>> RunPassNames;
@@ -226,15 +235,36 @@ GetOutputStream(const char *TargetName, Triple::OSType OS,
   return FDOut;
 }
 
-static void DiagnosticHandler(const DiagnosticInfo &DI, void *Context) {
+struct LLCDiagnosticHandler : public DiagnosticHandler {
+  bool *HasError;
+  LLCDiagnosticHandler(bool *HasErrorPtr) : HasError(HasErrorPtr) {}
+  bool handleDiagnostics(const DiagnosticInfo &DI) override {
+    if (DI.getSeverity() == DS_Error)
+      *HasError = true;
+
+    if (auto *Remark = dyn_cast<DiagnosticInfoOptimizationBase>(&DI))
+      if (!Remark->isEnabled())
+        return true;
+
+    DiagnosticPrinterRawOStream DP(errs());
+    errs() << LLVMContext::getDiagnosticMessagePrefix(DI.getSeverity()) << ": ";
+    DI.print(DP);
+    errs() << "\n";
+    return true;
+  }
+};
+
+static void InlineAsmDiagHandler(const SMDiagnostic &SMD, void *Context,
+                                 unsigned LocCookie) {
   bool *HasError = static_cast<bool *>(Context);
-  if (DI.getSeverity() == DS_Error)
+  if (SMD.getKind() == SourceMgr::DK_Error)
     *HasError = true;
 
-  DiagnosticPrinterRawOStream DP(errs());
-  errs() << LLVMContext::getDiagnosticMessagePrefix(DI.getSeverity()) << ": ";
-  DI.print(DP);
-  errs() << "\n";
+  SMD.print(nullptr, errs());
+
+  // For testing purposes, we print the LocCookie here.
+  if (LocCookie)
+    errs() << "note: !srcloc = " << LocCookie << "\n";
 }
 
 // main - Entry point for the llc compiler.
@@ -265,6 +295,13 @@ int main(int argc, char **argv) {
   initializeCountingFunctionInserterPass(*Registry);
   initializeUnreachableBlockElimLegacyPassPass(*Registry);
   initializeConstantHoistingLegacyPassPass(*Registry);
+  initializeScalarOpts(*Registry);
+  initializeVectorization(*Registry);
+  initializeScalarizeMaskedMemIntrinPass(*Registry);
+  initializeExpandReductionsPass(*Registry);
+
+  // Initialize debugging passes.
+  initializeScavengerTestPass(*Registry);
 
   // Register the target printer for --version.
   cl::AddExtraVersionPrinter(TargetRegistry::printRegisteredTargetsForVersion);
@@ -275,13 +312,43 @@ int main(int argc, char **argv) {
 
   // Set a diagnostic handler that doesn't exit on the first error
   bool HasError = false;
-  Context.setDiagnosticHandler(DiagnosticHandler, &HasError);
+  Context.setDiagnosticHandler(
+      llvm::make_unique<LLCDiagnosticHandler>(&HasError));
+  Context.setInlineAsmDiagnosticHandler(InlineAsmDiagHandler, &HasError);
+
+  if (PassRemarksWithHotness)
+    Context.setDiagnosticsHotnessRequested(true);
+
+  if (PassRemarksHotnessThreshold)
+    Context.setDiagnosticsHotnessThreshold(PassRemarksHotnessThreshold);
+
+  std::unique_ptr<tool_output_file> YamlFile;
+  if (RemarksFilename != "") {
+    std::error_code EC;
+    YamlFile = llvm::make_unique<tool_output_file>(RemarksFilename, EC,
+                                                   sys::fs::F_None);
+    if (EC) {
+      errs() << EC.message() << '\n';
+      return 1;
+    }
+    Context.setDiagnosticsOutputFile(
+        llvm::make_unique<yaml::Output>(YamlFile->os()));
+  }
+
+  if (InputLanguage != "" && InputLanguage != "ir" &&
+      InputLanguage != "mir") {
+    errs() << argv[0] << "Input language must be '', 'IR' or 'MIR'\n";
+    return 1;
+  }
 
   // Compile the module TimeCompilations times to give better compile time
   // metrics.
   for (unsigned I = TimeCompilations; I; --I)
     if (int RetVal = compileModule(argv, Context))
       return RetVal;
+
+  if (YamlFile)
+    YamlFile->keep();
   return 0;
 }
 
@@ -298,9 +365,7 @@ static bool addPass(PassManagerBase &PM, const char *argv0,
   }
 
   Pass *P;
-  if (PI->getTargetMachineCtor())
-    P = PI->getTargetMachineCtor()(&TPC.getTM<TargetMachine>());
-  else if (PI->getNormalCtor())
+  if (PI->getNormalCtor())
     P = PI->getNormalCtor()();
   else {
     errs() << argv0 << ": cannot create pass: " << PI->getPassName() << "\n";
@@ -311,20 +376,6 @@ static bool addPass(PassManagerBase &PM, const char *argv0,
   TPC.printAndVerify(Banner);
 
   return false;
-}
-
-static AnalysisID getPassID(const char *argv0, const char *OptionName,
-                            StringRef PassName) {
-  if (PassName.empty())
-    return nullptr;
-
-  const PassRegistry &PR = *PassRegistry::getPassRegistry();
-  const PassInfo *PI = PR.getPassInfo(PassName);
-  if (!PI) {
-    errs() << argv0 << ": " << OptionName << " pass is not registered.\n";
-    exit(1);
-  }
-  return PI->getTypeInfo();
 }
 
 static int compileModule(char **argv, LLVMContext &Context) {
@@ -339,10 +390,11 @@ static int compileModule(char **argv, LLVMContext &Context) {
 
   // If user just wants to list available options, skip module loading
   if (!SkipModule) {
-    if (StringRef(InputFilename).endswith_lower(".mir")) {
+    if (InputLanguage == "mir" ||
+        (InputLanguage == "" && StringRef(InputFilename).endswith(".mir"))) {
       MIR = createMIRParserFromFile(InputFilename, Err, Context);
       if (MIR)
-        M = MIR->parseLLVMModule();
+        M = MIR->parseIRModule();
     } else
       M = parseIRFile(InputFilename, Err, Context);
     if (!M) {
@@ -398,10 +450,12 @@ static int compileModule(char **argv, LLVMContext &Context) {
   Options.MCOptions.MCUseDwarfDirectory = EnableDwarfDirectory;
   Options.MCOptions.AsmVerbose = AsmVerbose;
   Options.MCOptions.PreserveAsmComments = PreserveComments;
+  Options.MCOptions.IASSearchPaths = IncludeDirs;
+  Options.MCOptions.SplitDwarfFile = SplitDwarfFile;
 
-  std::unique_ptr<TargetMachine> Target(
-      TheTarget->createTargetMachine(TheTriple.getTriple(), CPUStr, FeaturesStr,
-                                     Options, getRelocModel(), CMModel, OLvl));
+  std::unique_ptr<TargetMachine> Target(TheTarget->createTargetMachine(
+      TheTriple.getTriple(), CPUStr, FeaturesStr, Options, getRelocModel(),
+      getCodeModel(), OLvl));
 
   assert(Target && "Could not allocate target machine!");
 
@@ -457,54 +511,45 @@ static int compileModule(char **argv, LLVMContext &Context) {
       OS = BOS.get();
     }
 
+    const char *argv0 = argv[0];
+    LLVMTargetMachine &LLVMTM = static_cast<LLVMTargetMachine&>(*Target);
+    MachineModuleInfo *MMI = new MachineModuleInfo(&LLVMTM);
+
+    // Construct a custom pass pipeline that starts after instruction
+    // selection.
     if (!RunPassNames->empty()) {
-      if (!StartAfter.empty() || !StopAfter.empty() || !StartBefore.empty() ||
-          !StopBefore.empty()) {
-        errs() << argv[0] << ": start-after and/or stop-after passes are "
-                             "redundant when run-pass is specified.\n";
-        return 1;
-      }
       if (!MIR) {
-        errs() << argv[0] << ": run-pass needs a .mir input.\n";
+        errs() << argv0 << ": run-pass is for .mir file only.\n";
         return 1;
       }
-      LLVMTargetMachine &LLVMTM = static_cast<LLVMTargetMachine&>(*Target);
       TargetPassConfig &TPC = *LLVMTM.createPassConfig(PM);
+      if (TPC.hasLimitedCodeGenPipeline()) {
+        errs() << argv0 << ": run-pass cannot be used with "
+               << TPC.getLimitedCodeGenPipelineReason(" and ") << ".\n";
+        return 1;
+      }
+
+      TPC.setDisableVerify(NoVerify);
       PM.add(&TPC);
-      MachineModuleInfo *MMI = new MachineModuleInfo(&LLVMTM);
-      MMI->setMachineFunctionInitializer(MIR.get());
       PM.add(MMI);
       TPC.printAndVerify("");
-
       for (const std::string &RunPassName : *RunPassNames) {
-        if (addPass(PM, argv[0], RunPassName, TPC))
+        if (addPass(PM, argv0, RunPassName, TPC))
           return 1;
       }
+      TPC.setInitialized();
       PM.add(createPrintMIRPass(*OS));
-    } else {
-      const char *argv0 = argv[0];
-      AnalysisID StartBeforeID = getPassID(argv0, "start-before", StartBefore);
-      AnalysisID StartAfterID = getPassID(argv0, "start-after", StartAfter);
-      AnalysisID StopAfterID = getPassID(argv0, "stop-after", StopAfter);
-      AnalysisID StopBeforeID = getPassID(argv0, "stop-before", StopBefore);
+      PM.add(createFreeMachineFunctionPass());
+    } else if (Target->addPassesToEmitFile(PM, *OS, FileType, NoVerify, MMI)) {
+      errs() << argv0 << ": target does not support generation of this"
+             << " file type!\n";
+      return 1;
+    }
 
-      if (StartBeforeID && StartAfterID) {
-        errs() << argv[0] << ": -start-before and -start-after specified!\n";
+    if (MIR) {
+      assert(MMI && "Forgot to create MMI?");
+      if (MIR->parseMachineFunctions(*M, *MMI))
         return 1;
-      }
-      if (StopBeforeID && StopAfterID) {
-        errs() << argv[0] << ": -stop-before and -stop-after specified!\n";
-        return 1;
-      }
-
-      // Ask the target to add backend passes as necessary.
-      if (Target->addPassesToEmitFile(PM, *OS, FileType, NoVerify,
-                                      StartBeforeID, StartAfterID, StopBeforeID,
-                                      StopAfterID, MIR.get())) {
-        errs() << argv[0] << ": target does not support generation of this"
-               << " file type!\n";
-        return 1;
-      }
     }
 
     // Before executing passes, print the final values of the LLVM options.
@@ -524,8 +569,9 @@ static int compileModule(char **argv, LLVMContext &Context) {
 
     PM.run(*M);
 
-    auto HasError = *static_cast<bool *>(Context.getDiagnosticContext());
-    if (HasError)
+    auto HasError =
+        ((const LLCDiagnosticHandler *)(Context.getDiagHandlerPtr()))->HasError;
+    if (*HasError)
       return 1;
 
     // Compare the two outputs and make sure they're the same

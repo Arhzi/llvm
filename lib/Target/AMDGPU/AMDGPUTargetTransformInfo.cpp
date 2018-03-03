@@ -237,6 +237,7 @@ unsigned AMDGPUTTIImpl::getLoadStoreVecRegBitWidth(unsigned AddrSpace) const {
   AMDGPUAS AS = ST->getAMDGPUAS();
   if (AddrSpace == AS.GLOBAL_ADDRESS ||
       AddrSpace == AS.CONSTANT_ADDRESS ||
+      AddrSpace == AS.CONSTANT_ADDRESS_32BIT ||
       AddrSpace == AS.FLAT_ADDRESS)
     return 128;
   if (AddrSpace == AS.LOCAL_ADDRESS ||
@@ -286,6 +287,35 @@ unsigned AMDGPUTTIImpl::getMaxInterleaveFactor(unsigned VF) {
     return 1;
 
   return 8;
+}
+
+bool AMDGPUTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
+                                       MemIntrinsicInfo &Info) const {
+  switch (Inst->getIntrinsicID()) {
+  case Intrinsic::amdgcn_atomic_inc:
+  case Intrinsic::amdgcn_atomic_dec:
+  case Intrinsic::amdgcn_ds_fadd:
+  case Intrinsic::amdgcn_ds_fmin:
+  case Intrinsic::amdgcn_ds_fmax: {
+    auto *Ordering = dyn_cast<ConstantInt>(Inst->getArgOperand(2));
+    auto *Volatile = dyn_cast<ConstantInt>(Inst->getArgOperand(4));
+    if (!Ordering || !Volatile)
+      return false; // Invalid.
+
+    unsigned OrderingVal = Ordering->getZExtValue();
+    if (OrderingVal > static_cast<unsigned>(AtomicOrdering::SequentiallyConsistent))
+      return false;
+
+    Info.PtrVal = Inst->getArgOperand(0);
+    Info.Ordering = static_cast<AtomicOrdering>(OrderingVal);
+    Info.ReadMem = true;
+    Info.WriteMem = true;
+    Info.IsVolatile = !Volatile->isNullValue();
+    return true;
+  }
+  default:
+    return false;
+  }
 }
 
 int AMDGPUTTIImpl::getArithmeticInstrCost(
@@ -449,6 +479,9 @@ static bool isIntrinsicSourceOfDivergence(const IntrinsicInst *I) {
   case Intrinsic::r600_read_tidig_z:
   case Intrinsic::amdgcn_atomic_inc:
   case Intrinsic::amdgcn_atomic_dec:
+  case Intrinsic::amdgcn_ds_fadd:
+  case Intrinsic::amdgcn_ds_fmin:
+  case Intrinsic::amdgcn_ds_fmax:
   case Intrinsic::amdgcn_image_atomic_swap:
   case Intrinsic::amdgcn_image_atomic_add:
   case Intrinsic::amdgcn_image_atomic_sub:
@@ -491,7 +524,9 @@ static bool isArgPassedInSGPR(const Argument *A) {
   case CallingConv::SPIR_KERNEL:
     return true;
   case CallingConv::AMDGPU_VS:
+  case CallingConv::AMDGPU_LS:
   case CallingConv::AMDGPU_HS:
+  case CallingConv::AMDGPU_ES:
   case CallingConv::AMDGPU_GS:
   case CallingConv::AMDGPU_PS:
   case CallingConv::AMDGPU_CS:

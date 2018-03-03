@@ -18,20 +18,32 @@ namespace dwarf {
 namespace syntax {
 
 // Symbolic names for various syntax elements.
-enum HighlightColor { Address, String, Tag, Attribute, Enumerator, Macro };
+enum HighlightColor {
+  Address,
+  String,
+  Tag,
+  Attribute,
+  Enumerator,
+  Macro,
+  Error,
+  Warning,
+  Note
+};
 
 /// An RAII object that temporarily switches an output stream to a
 /// specific color.
 class WithColor {
   raw_ostream &OS;
+  /// Determine whether colors should be displayed.
+  bool colorsEnabled(raw_ostream &OS);
 
 public:
   /// To be used like this: WithColor(OS, syntax::String) << "text";
   WithColor(raw_ostream &OS, enum HighlightColor Type);
   ~WithColor();
 
-  raw_ostream& get() { return OS; }
-  operator raw_ostream& () { return OS; }
+  raw_ostream &get() { return OS; }
+  operator raw_ostream &() { return OS; }
 };
 
 } // end namespace syntax

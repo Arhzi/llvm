@@ -165,6 +165,29 @@ struct BaseAddress {
   uint64_t SectionIndex;
 };
 
+/// Represents a unit's contribution to the string offsets table.
+struct StrOffsetsContributionDescriptor {
+  uint64_t Base = 0;
+  uint64_t Size = 0;
+  /// Format and version.
+  DWARFFormParams FormParams = {0, 0, dwarf::DwarfFormat::DWARF32};
+
+  StrOffsetsContributionDescriptor(uint64_t Base, uint64_t Size,
+                                   uint8_t Version, dwarf::DwarfFormat Format)
+      : Base(Base), Size(Size), FormParams({Version, 0, Format}) {}
+
+  uint8_t getVersion() const { return FormParams.Version; }
+  dwarf::DwarfFormat getFormat() const { return FormParams.Format; }
+  uint8_t getDwarfOffsetByteSize() const {
+    return FormParams.getDwarfOffsetByteSize();
+  }
+  /// Determine whether a contribution to the string offsets table is
+  /// consistent with the relevant section size and that its length is
+  /// a multiple of the size of one of its entries.
+  Optional<StrOffsetsContributionDescriptor>
+  validateContributionSize(DWARFDataExtractor &DA);
+};
+
 class DWARFUnit {
   DWARFContext &Context;
   /// Section containing this DWARFUnit.
@@ -176,7 +199,6 @@ class DWARFUnit {
   const DWARFSection &LineSection;
   StringRef StringSection;
   const DWARFSection &StringOffsetSection;
-  uint64_t StringOffsetSectionBase = 0;
   const DWARFSection *AddrOffsetSection;
   uint32_t AddrOffsetSectionBase = 0;
   bool isLittleEndian;
@@ -185,6 +207,9 @@ class DWARFUnit {
 
   // Version, address size, and DWARF format.
   DWARFFormParams FormParams;
+  /// Start, length, and DWARF format of the unit's contribution to the string
+  /// offsets table (DWARF v5).
+  Optional<StrOffsetsContributionDescriptor> StringOffsetsTableContribution;
 
   uint32_t Offset;
   uint32_t Length;
@@ -218,6 +243,21 @@ protected:
 
   /// Size in bytes of the unit header.
   virtual uint32_t getHeaderSize() const { return getVersion() <= 4 ? 11 : 12; }
+
+  /// Find the unit's contribution to the string offsets table and determine its
+  /// length and form. The given offset is expected to be derived from the unit
+  /// DIE's DW_AT_str_offsets_base attribute.
+  Optional<StrOffsetsContributionDescriptor>
+  determineStringOffsetsTableContribution(DWARFDataExtractor &DA,
+                                          uint64_t Offset);
+
+  /// Find the unit's contribution to the string offsets table and determine its
+  /// length and form. The given offset is expected to be 0 in a dwo file or,
+  /// in a dwp file, the start of the unit's contribution to the string offsets
+  /// table section (as determined by the index table).
+  Optional<StrOffsetsContributionDescriptor>
+  determineStringOffsetsTableContributionDWO(DWARFDataExtractor &DA,
+                                             uint64_t Offset);
 
 public:
   DWARFUnit(DWARFContext &Context, const DWARFSection &Section,
@@ -259,7 +299,6 @@ public:
     return DataExtractor(StringSection, false, 0);
   }
 
-
   bool extract(DataExtractor debug_info, uint32_t* offset_ptr);
 
   /// extractRangeList - extracts the range list referenced by this compile
@@ -272,6 +311,10 @@ public:
   uint32_t getNextUnitOffset() const { return Offset + Length + 4; }
   uint32_t getLength() const { return Length; }
 
+  const Optional<StrOffsetsContributionDescriptor> &
+  getStringOffsetsTableContribution() const {
+    return StringOffsetsTableContribution;
+  }
   const DWARFFormParams &getFormParams() const { return FormParams; }
   uint16_t getVersion() const { return FormParams.Version; }
   dwarf::DwarfFormat getFormat() const { return FormParams.Format; }
@@ -281,16 +324,35 @@ public:
     return FormParams.getDwarfOffsetByteSize();
   }
 
+  uint8_t getDwarfStringOffsetsByteSize() const {
+    assert(StringOffsetsTableContribution);
+    return StringOffsetsTableContribution->getDwarfOffsetByteSize();
+  }
+
+  uint64_t getStringOffsetsBase() const {
+    assert(StringOffsetsTableContribution);
+    return StringOffsetsTableContribution->Base;
+  }
+
   const DWARFAbbreviationDeclarationSet *getAbbreviations() const;
 
   uint8_t getUnitType() const { return UnitType; }
 
-  static bool isValidUnitType(uint8_t UnitType) {
-    return UnitType == dwarf::DW_UT_compile || UnitType == dwarf::DW_UT_type ||
-           UnitType == dwarf::DW_UT_partial ||
-           UnitType == dwarf::DW_UT_skeleton ||
-           UnitType == dwarf::DW_UT_split_compile ||
-           UnitType == dwarf::DW_UT_split_type;
+  static bool isMatchingUnitTypeAndTag(uint8_t UnitType, dwarf::Tag Tag) {
+    switch (UnitType) {
+    case dwarf::DW_UT_compile:
+      return Tag == dwarf::DW_TAG_compile_unit;
+    case dwarf::DW_UT_type:
+      return Tag == dwarf::DW_TAG_type_unit;
+    case dwarf::DW_UT_partial:
+      return Tag == dwarf::DW_TAG_partial_unit;
+    case dwarf::DW_UT_skeleton:
+      return Tag == dwarf::DW_TAG_skeleton_unit;
+    case dwarf::DW_UT_split_compile:
+    case dwarf::DW_UT_split_type:
+      return dwarf::isUnitType(Tag);
+    }
+    return false;
   }
 
   /// \brief Return the number of bytes for the header of a unit of
@@ -329,6 +391,11 @@ public:
 
   void collectAddressRanges(DWARFAddressRangesVector &CURanges);
 
+  /// Returns subprogram DIE with address range encompassing the provided
+  /// address. The pointer is alive as long as parsed compile unit DIEs are not
+  /// cleared.
+  DWARFDie getSubroutineForAddress(uint64_t Address);
+
   /// getInlinedChainForAddress - fetches inlined chain for a given address.
   /// Returns empty chain if there is no subprogram containing address. The
   /// chain is valid as long as parsed compile unit DIEs are not cleared.
@@ -363,6 +430,7 @@ public:
 
   DWARFDie getParent(const DWARFDebugInfoEntry *Die);
   DWARFDie getSibling(const DWARFDebugInfoEntry *Die);
+  DWARFDie getFirstChild(const DWARFDebugInfoEntry *Die);
 
   /// \brief Return the DIE object for a given offset inside the
   /// unit's DIE vector.
@@ -411,11 +479,6 @@ private:
   /// parseDWO - Parses .dwo file for current compile unit. Returns true if
   /// it was actually constructed.
   bool parseDWO();
-
-  /// getSubroutineForAddress - Returns subprogram DIE with address range
-  /// encompassing the provided address. The pointer is alive as long as parsed
-  /// compile unit DIEs are not cleared.
-  DWARFDie getSubroutineForAddress(uint64_t Address);
 };
 
 } // end namespace llvm

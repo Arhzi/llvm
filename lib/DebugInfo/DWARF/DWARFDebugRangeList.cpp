@@ -13,7 +13,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cinttypes>
 #include <cstdint>
-#include <utility>
 
 using namespace llvm;
 

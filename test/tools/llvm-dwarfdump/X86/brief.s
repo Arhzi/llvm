@@ -1,6 +1,9 @@
 # RUN: llvm-mc %s -filetype obj -triple x86_64-apple-darwin -o - \
 # RUN: | llvm-dwarfdump --debug-info --debug-line - \
 # RUN: | FileCheck %s
+# RUN: llvm-mc %s -filetype obj -triple x86_64-apple-darwin -o - \
+# RUN: | llvm-dwarfdump --debug-info --debug-line - -o %t
+# RUN: cat %t | FileCheck %s
 
 # CHECK-NOT: .debug_abbrev contents:
 #
@@ -35,14 +38,11 @@ Lfunc_begin0:
 	.file	1 "brief.c"
 	.loc	1 1 0                   ## brief.c:1:0
 	.cfi_startproc
-## BB#0:                                ## %entry
+## %bb.0:                               ## %entry
 	pushq	%rbp
-Lcfi0:
 	.cfi_def_cfa_offset 16
-Lcfi1:
 	.cfi_offset %rbp, -16
 	movq	%rsp, %rbp
-Lcfi2:
 	.cfi_def_cfa_register %rbp
 	xorl	%eax, %eax
 Ltmp0:

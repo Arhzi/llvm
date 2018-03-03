@@ -56,7 +56,7 @@ template <> struct ScalarTraits<StringValue> {
     return "";
   }
 
-  static bool mustQuote(StringRef Scalar) { return needsQuotes(Scalar); }
+  static QuotingType mustQuote(StringRef S) { return needsQuotes(S); }
 };
 
 struct FlowStringValue : StringValue {
@@ -73,7 +73,7 @@ template <> struct ScalarTraits<FlowStringValue> {
     return ScalarTraits<StringValue>::input(Scalar, Ctx, S);
   }
 
-  static bool mustQuote(StringRef Scalar) { return needsQuotes(Scalar); }
+  static QuotingType mustQuote(StringRef S) { return needsQuotes(S); }
 };
 
 struct BlockStringValue {
@@ -120,7 +120,7 @@ template <> struct ScalarTraits<UnsignedValue> {
     return ScalarTraits<unsigned>::input(Scalar, Ctx, Value.Value);
   }
 
-  static bool mustQuote(StringRef Scalar) {
+  static QuotingType mustQuote(StringRef Scalar) {
     return ScalarTraits<unsigned>::mustQuote(Scalar);
   }
 };
@@ -214,6 +214,7 @@ struct MachineStackObject {
   unsigned Alignment = 0;
   uint8_t StackID = 0;
   StringValue CalleeSavedRegister;
+  bool CalleeSavedRestored = true;
   Optional<int64_t> LocalOffset;
   StringValue DebugVar;
   StringValue DebugExpr;
@@ -225,6 +226,7 @@ struct MachineStackObject {
            Alignment == Other.Alignment &&
            StackID == Other.StackID &&
            CalleeSavedRegister == Other.CalleeSavedRegister &&
+           CalleeSavedRestored == Other.CalleeSavedRestored &&
            LocalOffset == Other.LocalOffset && DebugVar == Other.DebugVar &&
            DebugExpr == Other.DebugExpr && DebugLoc == Other.DebugLoc;
   }
@@ -253,6 +255,8 @@ template <> struct MappingTraits<MachineStackObject> {
     YamlIO.mapOptional("stack-id", Object.StackID);
     YamlIO.mapOptional("callee-saved-register", Object.CalleeSavedRegister,
                        StringValue()); // Don't print it out when it's empty.
+    YamlIO.mapOptional("callee-saved-restored", Object.CalleeSavedRestored,
+                       true);
     YamlIO.mapOptional("local-offset", Object.LocalOffset, Optional<int64_t>());
     YamlIO.mapOptional("di-variable", Object.DebugVar,
                        StringValue()); // Don't print it out when it's empty.
@@ -278,13 +282,15 @@ struct FixedMachineStackObject {
   bool IsImmutable = false;
   bool IsAliased = false;
   StringValue CalleeSavedRegister;
+  bool CalleeSavedRestored = true;
 
   bool operator==(const FixedMachineStackObject &Other) const {
     return ID == Other.ID && Type == Other.Type && Offset == Other.Offset &&
            Size == Other.Size && Alignment == Other.Alignment &&
            StackID == Other.StackID &&
            IsImmutable == Other.IsImmutable && IsAliased == Other.IsAliased &&
-           CalleeSavedRegister == Other.CalleeSavedRegister;
+           CalleeSavedRegister == Other.CalleeSavedRegister &&
+           CalleeSavedRestored == Other.CalleeSavedRestored;
   }
 };
 
@@ -313,6 +319,8 @@ template <> struct MappingTraits<FixedMachineStackObject> {
     }
     YamlIO.mapOptional("callee-saved-register", Object.CalleeSavedRegister,
                        StringValue()); // Don't print it out when it's empty.
+    YamlIO.mapOptional("callee-saved-restored", Object.CalleeSavedRestored,
+                     true);
   }
 
   static const bool flow = true;
@@ -464,6 +472,7 @@ struct MachineFunction {
   bool Legalized = false;
   bool RegBankSelected = false;
   bool Selected = false;
+  bool FailedISel = false;
   // Register information
   bool TracksRegLiveness = false;
   std::vector<VirtualRegisterDefinition> VirtualRegisters;
@@ -487,6 +496,7 @@ template <> struct MappingTraits<MachineFunction> {
     YamlIO.mapOptional("legalized", MF.Legalized, false);
     YamlIO.mapOptional("regBankSelected", MF.RegBankSelected, false);
     YamlIO.mapOptional("selected", MF.Selected, false);
+    YamlIO.mapOptional("failedISel", MF.FailedISel, false);
     YamlIO.mapOptional("tracksRegLiveness", MF.TracksRegLiveness, false);
     YamlIO.mapOptional("registers", MF.VirtualRegisters,
                        std::vector<VirtualRegisterDefinition>());

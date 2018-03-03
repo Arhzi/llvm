@@ -699,7 +699,7 @@ class LL_FM_MM<bits<4> funct> : MMArch {
   let Inst{11-0}  = addr{11-0};
 }
 
-class LLE_FM_MM<bits<4> funct> {
+class LLE_FM_MM<bits<4> funct> : MMArch {
   bits<5> rt;
   bits<21> addr;
   bits<5> base = addr{20-16};
@@ -730,7 +730,6 @@ class ADDS_FM_MM<bits<2> fmt, bits<8> funct> : MMArch {
   let Inst{9-8}   = fmt;
   let Inst{7-0}   = funct;
 
-  list<dag> Pattern = [];
 }
 
 class LWXC1_FM_MM<bits<9> funct> : MMArch {
@@ -786,13 +785,14 @@ class C_COND_FM_MM<bits <2> fmt, bits<4> c> : CEQS_FM_MM<fmt> {
 }
 
 class BC1F_FM_MM<bits<5> tf> : MMArch {
+  bits<3> fcc;
   bits<16> offset;
 
   bits<32> Inst;
 
   let Inst{31-26} = 0x10;
   let Inst{25-21} = tf;
-  let Inst{20-18} = 0x0; // cc
+  let Inst{20-18} = fcc; // cc
   let Inst{17-16} = 0x0;
   let Inst{15-0}  = offset;
 }

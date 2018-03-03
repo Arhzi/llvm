@@ -39,11 +39,11 @@ define float @caller(i8* %error_ref) {
 ; CHECK-APPLE-DAG: mov [[ID:r[0-9]+]], r0
 ; CHECK-APPLE-DAG: mov r8, #0
 ; CHECK-APPLE: bl {{.*}}foo
+; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: cmp r8, #0
 ; Access part of the error object and save it to error_ref
-; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r8, #8]
+; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r0, #8]
 ; CHECK-APPLE: strbeq [[CODE]], [{{.*}}[[ID]]]
-; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: bl {{.*}}free
 
 ; CHECK-O0-LABEL: caller:
@@ -138,7 +138,7 @@ define float @foo_if(%swift_error** swifterror %error_ptr_ref, i32 %cc) {
 ; CHECK-APPLE: eq
 ; CHECK-APPLE: mov r0, #16
 ; CHECK-APPLE: malloc
-; CHECK-APPLE: mov [[ID:r[0-9]+]], #1
+; CHECK-APPLE-DAG: mov [[ID:r[0-9]+]], #1
 ; CHECK-APPLE-DAG: mov r8, r{{.*}}
 ; CHECK-APPLE-DAG: strb [[ID]], [r{{.*}}, #8]
 
@@ -177,14 +177,12 @@ define float @foo_loop(%swift_error** swifterror %error_ptr_ref, i32 %cc, float 
 ; CHECK-APPLE-LABEL: foo_loop:
 ; CHECK-APPLE: mov [[CODE:r[0-9]+]], r0
 ; swifterror is kept in a register
-; CHECK-APPLE: mov [[ID:r[0-9]+]], r8
 ; CHECK-APPLE: cmp [[CODE]], #0
 ; CHECK-APPLE: beq
 ; CHECK-APPLE: mov r0, #16
 ; CHECK-APPLE: malloc
-; CHECK-APPLE: strb r{{.*}}, [{{.*}}[[ID]], #8]
+; CHECK-APPLE: strb r{{.*}}, [r0, #8]
 ; CHECK-APPLE: ble
-; CHECK-APPLE: mov r8, [[ID]]
 
 ; CHECK-O0-LABEL: foo_loop:
 ; CHECK-O0: mov r{{.*}}, r8
@@ -266,11 +264,11 @@ define float @caller3(i8* %error_ref) {
 ; CHECK-APPLE: mov [[ID:r[0-9]+]], r0
 ; CHECK-APPLE: mov r8, #0
 ; CHECK-APPLE: bl {{.*}}foo_sret
+; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: cmp r8, #0
 ; Access part of the error object and save it to error_ref
-; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r8, #8]
+; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r0, #8]
 ; CHECK-APPLE: strbeq [[CODE]], [{{.*}}[[ID]]]
-; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: bl {{.*}}free
 
 ; CHECK-O0-LABEL: caller3:
@@ -314,10 +312,9 @@ define float @foo_vararg(%swift_error** swifterror %error_ptr_ref, ...) {
 ; CHECK-APPLE-LABEL: foo_vararg:
 ; CHECK-APPLE: mov r0, #16
 ; CHECK-APPLE: malloc
-; CHECK-APPLE: mov [[REG:r[0-9]+]], r0
+; CHECK-APPLE: mov r8, r0
 ; CHECK-APPLE: mov [[ID:r[0-9]+]], #1
-; CHECK-APPLE-DAG: strb [[ID]], [{{.*}}[[REG]], #8]
-; CHECK-APPLE-DAG: mov r8, [[REG]]
+; CHECK-APPLE-DAG: strb [[ID]], [r8, #8]
 
 entry:
   %call = call i8* @malloc(i64 16)
@@ -348,11 +345,11 @@ define float @caller4(i8* %error_ref) {
 ; CHECK-APPLE: mov [[ID:r[0-9]+]], r0
 ; CHECK-APPLE: mov r8, #0
 ; CHECK-APPLE: bl {{.*}}foo_vararg
+; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: cmp r8, #0
 ; Access part of the error object and save it to error_ref
-; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r8, #8]
+; CHECK-APPLE: ldrbeq [[CODE:r[0-9]+]], [r0, #8]
 ; CHECK-APPLE: strbeq [[CODE]], [{{.*}}[[ID]]]
-; CHECK-APPLE: mov r0, r8
 ; CHECK-APPLE: bl {{.*}}free
 entry:
   %error_ptr_ref = alloca swifterror %swift_error*
@@ -506,48 +503,48 @@ declare swiftcc void @params_in_reg2(i32, i32, i32, i32, i8* swiftself, %swift_e
 ; CHECK-ARMV7:  pop     {r4, r5, r6, r7, r10, r11, pc}
 
 ; CHECK-ANDROID-LABEL: params_and_return_in_reg
-; CHECK-ANDROID:  push	{r4, r5, r6, r7, r10, r11, lr}
-; CHECK-ANDROID:  sub	sp, sp, #12
-; CHECK-ANDROID:  mov	r5, r8
-; CHECK-ANDROID:  str	r10, [sp, #4]           @ 4-byte Spill
-; CHECK-ANDROID:  mov	r6, r3
-; CHECK-ANDROID:  mov	r7, r2
-; CHECK-ANDROID:  mov	r4, r1
-; CHECK-ANDROID:  mov	r11, r0
-; CHECK-ANDROID:  mov	r0, #1
-; CHECK-ANDROID:  mov	r1, #2
-; CHECK-ANDROID:  mov	r2, #3
-; CHECK-ANDROID:  mov	r3, #4
-; CHECK-ANDROID:  mov	r10, #0
-; CHECK-ANDROID:  mov	r8, #0
-; CHECK-ANDROID:  bl	params_in_reg2
-; CHECK-ANDROID:  ldr	r10, [sp, #4]           @ 4-byte Reload
-; CHECK-ANDROID:  mov	r0, r11
-; CHECK-ANDROID:  str	r8, [sp]                @ 4-byte Spill
-; CHECK-ANDROID:  mov	r1, r4
-; CHECK-ANDROID:  mov	r2, r7
-; CHECK-ANDROID:  mov	r3, r6
-; CHECK-ANDROID:  mov	r8, r5
-; CHECK-ANDROID:  bl	params_and_return_in_reg2
-; CHECK-ANDROID:  mov	r11, r8
-; CHECK-ANDROID:  ldr	r8, [sp]                @ 4-byte Reload
-; CHECK-ANDROID:  mov	r4, r0
-; CHECK-ANDROID:  mov	r6, r1
-; CHECK-ANDROID:  mov	r7, r2
-; CHECK-ANDROID:  mov	r5, r3
-; CHECK-ANDROID:  mov	r0, #1
-; CHECK-ANDROID:  mov	r1, #2
-; CHECK-ANDROID:  mov	r2, #3
-; CHECK-ANDROID:  mov	r3, #4
-; CHECK-ANDROID:  mov	r10, #0
-; CHECK-ANDROID:  bl	params_in_reg2
-; CHECK-ANDROID:  mov	r0, r4
-; CHECK-ANDROID:  mov	r1, r6
-; CHECK-ANDROID:  mov	r2, r7
-; CHECK-ANDROID:  mov	r3, r5
-; CHECK-ANDROID:  mov	r8, r11
-; CHECK-ANDROID:  add	sp, sp, #12
-; CHECK-ANDROID:  pop	{r4, r5, r6, r7, r10, r11, pc}
+; CHECK-ANDROID:  push    {r4, r5, r6, r7, r9, r10, r11, lr}
+; CHECK-ANDROID:  sub     sp, sp, #16
+; CHECK-ANDROID:  str     r8, [sp, #4]            @ 4-byte Spill
+; CHECK-ANDROID:  mov     r11, r10
+; CHECK-ANDROID:  mov     r6, r3
+; CHECK-ANDROID:  mov     r7, r2
+; CHECK-ANDROID:  mov     r4, r1
+; CHECK-ANDROID:  mov     r5, r0
+; CHECK-ANDROID:  mov     r0, #1
+; CHECK-ANDROID:  mov     r1, #2
+; CHECK-ANDROID:  mov     r2, #3
+; CHECK-ANDROID:  mov     r3, #4
+; CHECK-ANDROID:  mov     r10, #0
+; CHECK-ANDROID:  mov     r8, #0
+; CHECK-ANDROID:  bl      params_in_reg2
+; CHECK-ANDROID:  mov     r9, r8
+; CHECK-ANDROID:  ldr     r8, [sp, #4]            @ 4-byte Reload
+; CHECK-ANDROID:  mov     r0, r5
+; CHECK-ANDROID:  mov     r1, r4
+; CHECK-ANDROID:  mov     r2, r7
+; CHECK-ANDROID:  mov     r3, r6
+; CHECK-ANDROID:  mov     r10, r11
+; CHECK-ANDROID:  bl      params_and_return_in_reg2
+; CHECK-ANDROID:  mov     r4, r0
+; CHECK-ANDROID:  mov     r5, r1
+; CHECK-ANDROID:  mov     r6, r2
+; CHECK-ANDROID:  mov     r7, r3
+; CHECK-ANDROID:  mov     r11, r8
+; CHECK-ANDROID:  mov     r0, #1
+; CHECK-ANDROID:  mov     r1, #2
+; CHECK-ANDROID:  mov     r2, #3
+; CHECK-ANDROID:  mov     r3, #4
+; CHECK-ANDROID:  mov     r10, #0
+; CHECK-ANDROID:  mov     r8, r9
+; CHECK-ANDROID:  bl      params_in_reg2
+; CHECK-ANDROID:  mov     r0, r4
+; CHECK-ANDROID:  mov     r1, r5
+; CHECK-ANDROID:  mov     r2, r6
+; CHECK-ANDROID:  mov     r3, r7
+; CHECK-ANDROID:  mov     r8, r11
+; CHECK-ANDROID:  add     sp, sp, #16
+; CHECK-ANDROID:  pop	{r4, r5, r6, r7, r9, r10, r11, pc}
 
 define swiftcc { i32, i32, i32, i32} @params_and_return_in_reg(i32, i32, i32, i32, i8* swiftself, %swift_error** nocapture swifterror %err) {
   %error_ptr_ref = alloca swifterror %swift_error*, align 8

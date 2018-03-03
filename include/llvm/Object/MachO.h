@@ -310,6 +310,16 @@ public:
   bool isSectionBSS(DataRefImpl Sec) const override;
   bool isSectionVirtual(DataRefImpl Sec) const override;
   bool isSectionBitcode(DataRefImpl Sec) const override;
+
+  /// When dsymutil generates the companion file, it strips all unnecessary
+  /// sections (e.g. everything in the _TEXT segment) by omitting their body
+  /// and setting the offset in their corresponding load command to zero.
+  ///
+  /// While the load command itself is valid, reading the section corresponds
+  /// to reading the number of bytes specified in the load command, starting
+  /// from offset 0 (i.e. the Mach-O header at the beginning of the file).
+  bool isSectionStripped(DataRefImpl Sec) const override;
+
   relocation_iterator section_rel_begin(DataRefImpl Sec) const override;
   relocation_iterator section_rel_end(DataRefImpl Sec) const override;
 
@@ -319,6 +329,9 @@ public:
     return make_range(extrel_begin(), extrel_end());
   }
 
+  relocation_iterator locrel_begin() const;
+  relocation_iterator locrel_end() const;
+  
   void moveRelocationNext(DataRefImpl &Rel) const override;
   uint64_t getRelocationOffset(DataRefImpl Rel) const override;
   symbol_iterator getRelocationSymbol(DataRefImpl Rel) const override;
@@ -350,7 +363,7 @@ public:
   uint8_t getBytesInAddress() const override;
 
   StringRef getFileFormatName() const override;
-  unsigned getArch() const override;
+  Triple::ArchType getArch() const override;
   SubtargetFeatures getFeatures() const override { return SubtargetFeatures(); }
   Triple getArchTriple(const char **McpuDefault = nullptr) const;
 
@@ -450,7 +463,7 @@ public:
 
   // In a MachO file, sections have a segment name. This is used in the .o
   // files. They have a single segment, but this field specifies which segment
-  // a section should be put in in the final object.
+  // a section should be put in the final object.
   StringRef getSectionFinalSegmentName(DataRefImpl Sec) const;
 
   // Names are stored as 16 bytes. These returns the raw 16 bytes without

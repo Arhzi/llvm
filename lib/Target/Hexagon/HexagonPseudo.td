@@ -247,11 +247,14 @@ def PS_aligna : Pseudo<(outs IntRegs:$Rd), (ins u32_0Imm:$A), "", []>;
 // This simplifies the frame-index elimination code.
 //
 let isMoveImm = 1, isAsCheapAsAMove = 1, isReMaterializable = 1,
-    isPseudo = 1, isCodeGenOnly = 1, hasSideEffects = 0 in {
+    isPseudo = 1, isCodeGenOnly = 1, hasSideEffects = 0, isExtendable = 1,
+    isExtentSigned = 1, opExtentBits = 16, opExtentAlign = 0 in {
+  let opExtendable = 2 in
   def PS_fi  : Pseudo<(outs IntRegs:$Rd),
-                         (ins IntRegs:$fi, s32_0Imm:$off), "">;
+                      (ins IntRegs:$fi, s32_0Imm:$off), "">;
+  let opExtendable = 3 in
   def PS_fia : Pseudo<(outs IntRegs:$Rd),
-                         (ins IntRegs:$Rs, IntRegs:$fi, s32_0Imm:$off), "">;
+                      (ins IntRegs:$Rs, IntRegs:$fi, s32_0Imm:$off), "">;
 }
 
 class CondStr<string CReg, bit True, bit New> {
@@ -424,7 +427,7 @@ class LDrivv_template<RegisterClass RC, InstHexagon rootInst>
 def PS_vloadrw_ai: LDrivv_template<HvxWR, V6_vL32b_ai>,
       Requires<[HasV60T,UseHVX]>;
 def PS_vloadrw_nt_ai: LDrivv_template<HvxWR, V6_vL32b_nt_ai>,
-      Requires<[HasV60T,UseHVXSgl]>;
+      Requires<[HasV60T,UseHVX]>;
 def PS_vloadrwu_ai: LDrivv_template<HvxWR, V6_vL32Ub_ai>,
       Requires<[HasV60T,UseHVX]>;
 
@@ -444,6 +447,14 @@ def PS_vselect: VSELInst<(outs HvxVR:$dst),
 def PS_wselect: VSELInst<(outs HvxWR:$dst),
       (ins PredRegs:$src1, HvxWR:$src2, HvxWR:$src3), V6_vccombine>,
       Requires<[HasV60T,UseHVX]>;
+
+let hasSideEffects = 0, isReMaterializable = 1, isPseudo = 1,
+    isCodeGenOnly = 1 in {
+  def PS_qtrue:  InstHexagon<(outs HvxQR:$Qd), (ins), "", [], "",
+                 V6_veqw.Itinerary, TypeCVI_VA>;
+  def PS_qfalse: InstHexagon<(outs HvxQR:$Qd), (ins), "", [], "",
+                 V6_vgtw.Itinerary, TypeCVI_VA>;
+}
 
 // Store predicate.
 let isExtendable = 1, opExtendable = 1, isExtentSigned = 1, opExtentBits = 13,

@@ -18,6 +18,8 @@
 #include "AMDGPUTargetStreamer.h"
 #include "InstPrinter/AMDGPUInstPrinter.h"
 #include "SIDefines.h"
+#include "llvm/MC/MCAsmBackend.h"
+#include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -74,16 +76,16 @@ static MCTargetStreamer *createAMDGPUAsmTargetStreamer(MCStreamer &S,
 static MCTargetStreamer * createAMDGPUObjectTargetStreamer(
                                                    MCStreamer &S,
                                                    const MCSubtargetInfo &STI) {
-  return new AMDGPUTargetELFStreamer(S);
+  return new AMDGPUTargetELFStreamer(S, STI);
 }
 
 static MCStreamer *createMCStreamer(const Triple &T, MCContext &Context,
-                                    MCAsmBackend &MAB, raw_pwrite_stream &OS,
-                                    MCCodeEmitter *Emitter, bool RelaxAll) {
-  if (T.getOS() == Triple::AMDHSA)
-    return createAMDGPUELFStreamer(Context, MAB, OS, Emitter, RelaxAll);
-
-  return createELFStreamer(Context, MAB, OS, Emitter, RelaxAll);
+                                    std::unique_ptr<MCAsmBackend> &&MAB,
+                                    raw_pwrite_stream &OS,
+                                    std::unique_ptr<MCCodeEmitter> &&Emitter,
+                                    bool RelaxAll) {
+  return createAMDGPUELFStreamer(T, Context, std::move(MAB), OS,
+                                 std::move(Emitter), RelaxAll);
 }
 
 extern "C" void LLVMInitializeAMDGPUTargetMC() {
@@ -101,6 +103,8 @@ extern "C" void LLVMInitializeAMDGPUTargetMC() {
   // R600 specific registration
   TargetRegistry::RegisterMCCodeEmitter(getTheAMDGPUTarget(),
                                         createR600MCCodeEmitter);
+  TargetRegistry::RegisterObjectTargetStreamer(
+      getTheAMDGPUTarget(), createAMDGPUObjectTargetStreamer);
 
   // GCN specific registration
   TargetRegistry::RegisterMCCodeEmitter(getTheGCNTarget(),

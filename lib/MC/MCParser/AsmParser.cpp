@@ -50,6 +50,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MD5.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SMLoc.h"
@@ -82,27 +83,6 @@ namespace {
 /// \brief Helper types for tracking macro definitions.
 typedef std::vector<AsmToken> MCAsmMacroArgument;
 typedef std::vector<MCAsmMacroArgument> MCAsmMacroArguments;
-
-struct MCAsmMacroParameter {
-  StringRef Name;
-  MCAsmMacroArgument Value;
-  bool Required = false;
-  bool Vararg = false;
-
-  MCAsmMacroParameter() = default;
-};
-
-typedef std::vector<MCAsmMacroParameter> MCAsmMacroParameters;
-
-struct MCAsmMacro {
-  StringRef Name;
-  StringRef Body;
-  MCAsmMacroParameters Parameters;
-
-public:
-  MCAsmMacro(StringRef N, StringRef B, MCAsmMacroParameters P)
-      : Name(N), Body(B), Parameters(std::move(P)) {}
-};
 
 /// \brief Helper class for storing information about an active macro
 /// instantiation.
@@ -163,9 +143,6 @@ private:
   /// extensions. Extensions register themselves in this map by calling
   /// addDirectiveHandler.
   StringMap<ExtensionDirectiveHandler> ExtensionDirectiveMap;
-
-  /// \brief Map of currently defined macros.
-  StringMap<MCAsmMacro> MacroMap;
 
   /// \brief Stack of active macro instantiations.
   std::vector<MacroInstantiation*> ActiveMacros;
@@ -307,17 +284,6 @@ private:
 
   /// \brief Control a flag in the parser that enables or disables macros.
   void setMacrosEnabled(bool Flag) {MacrosEnabledFlag = Flag;}
-
-  /// \brief Lookup a previously defined macro.
-  /// \param Name Macro name.
-  /// \returns Pointer to macro. NULL if no such macro was defined.
-  const MCAsmMacro* lookupMacro(StringRef Name);
-
-  /// \brief Define a new macro with the given name and information.
-  void defineMacro(StringRef Name, MCAsmMacro Macro);
-
-  /// \brief Undefine a macro. If no such macro was defined, it's a no-op.
-  void undefineMacro(StringRef Name);
 
   /// \brief Are we inside a macro instantiation?
   bool isInsideMacroInstantiation() {return !ActiveMacros.empty();}
@@ -503,6 +469,7 @@ private:
     DK_CV_STRINGTABLE,
     DK_CV_FILECHECKSUMS,
     DK_CV_FILECHECKSUM_OFFSET,
+    DK_CV_FPO_DATA,
     DK_CFI_SECTIONS,
     DK_CFI_STARTPROC,
     DK_CFI_ENDPROC,
@@ -538,6 +505,7 @@ private:
     DK_ERR,
     DK_ERROR,
     DK_WARNING,
+    DK_PRINT,
     DK_END
   };
 
@@ -579,6 +547,7 @@ private:
   bool parseDirectiveCVStringTable();
   bool parseDirectiveCVFileChecksums();
   bool parseDirectiveCVFileChecksumOffset();
+  bool parseDirectiveCVFPOData();
 
   // .cfi directives
   bool parseDirectiveCFIRegister(SMLoc DirectiveLoc);
@@ -681,6 +650,9 @@ private:
 
   // ".warning"
   bool parseDirectiveWarning(SMLoc DirectiveLoc);
+
+  // .print <double-quotes-string>
+  bool parseDirectivePrint(SMLoc DirectiveLoc);
 
   void initializeDirectiveKindMap();
 };
@@ -1835,7 +1807,7 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
 
   // If macros are enabled, check to see if this is a macro instantiation.
   if (areMacrosEnabled())
-    if (const MCAsmMacro *M = lookupMacro(IDVal)) {
+    if (const MCAsmMacro *M = getContext().lookupMacro(IDVal)) {
       return handleMacroEntry(M, IDLoc);
     }
 
@@ -2035,6 +2007,8 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       return parseDirectiveCVFileChecksums();
     case DK_CV_FILECHECKSUM_OFFSET:
       return parseDirectiveCVFileChecksumOffset();
+    case DK_CV_FPO_DATA:
+      return parseDirectiveCVFPOData();
     case DK_CFI_SECTIONS:
       return parseDirectiveCFISections();
     case DK_CFI_STARTPROC:
@@ -2130,6 +2104,8 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
     case DK_DS_P:
     case DK_DS_X:
       return parseDirectiveDS(IDVal, 12);
+    case DK_PRINT:
+      return parseDirectivePrint(IDLoc);
     }
 
     return Error(IDLoc, "unknown directive");
@@ -2710,17 +2686,6 @@ bool AsmParser::parseMacroArguments(const MCAsmMacro *M,
   return TokError("too many positional arguments");
 }
 
-const MCAsmMacro *AsmParser::lookupMacro(StringRef Name) {
-  StringMap<MCAsmMacro>::iterator I = MacroMap.find(Name);
-  return (I == MacroMap.end()) ? nullptr : &I->getValue();
-}
-
-void AsmParser::defineMacro(StringRef Name, MCAsmMacro Macro) {
-  MacroMap.insert(std::make_pair(Name, std::move(Macro)));
-}
-
-void AsmParser::undefineMacro(StringRef Name) { MacroMap.erase(Name); }
-
 bool AsmParser::handleMacroEntry(const MCAsmMacro *M, SMLoc NameLoc) {
   // Arbitrarily limit macro nesting depth (default matches 'as'). We can
   // eliminate this, although we should protect against infinite loops.
@@ -3284,12 +3249,11 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, unsigned ValueSize) {
 }
 
 /// parseDirectiveFile
-/// ::= .file [number] filename
-/// ::= .file number directory filename
+/// ::= .file filename
+/// ::= .file number [directory] filename [md5 checksum] [source source-text]
 bool AsmParser::parseDirectiveFile(SMLoc DirectiveLoc) {
   // FIXME: I'm not sure what this is.
   int64_t FileNumber = -1;
-  SMLoc FileNumberLoc = getLexer().getLoc();
   if (getLexer().is(AsmToken::Integer)) {
     FileNumber = getTok().getIntVal();
     Lex();
@@ -3321,20 +3285,66 @@ bool AsmParser::parseDirectiveFile(SMLoc DirectiveLoc) {
     Filename = Path;
   }
 
-  if (parseToken(AsmToken::EndOfStatement,
-                 "unexpected token in '.file' directive"))
-    return true;
+  std::string Checksum;
+
+  Optional<StringRef> Source;
+  bool HasSource = false;
+  std::string SourceString;
+
+  while (!parseOptionalToken(AsmToken::EndOfStatement)) {
+    StringRef Keyword;
+    if (check(getTok().isNot(AsmToken::Identifier),
+              "unexpected token in '.file' directive") ||
+        parseIdentifier(Keyword))
+      return true;
+    if (Keyword == "md5") {
+      if (check(FileNumber == -1,
+                "MD5 checksum specified, but no file number") ||
+          check(getTok().isNot(AsmToken::String),
+                "unexpected token in '.file' directive") ||
+          parseEscapedString(Checksum) ||
+          check(Checksum.size() != 32, "invalid MD5 checksum specified"))
+        return true;
+    } else if (Keyword == "source") {
+      HasSource = true;
+      if (check(FileNumber == -1,
+                "source specified, but no file number") ||
+          check(getTok().isNot(AsmToken::String),
+                "unexpected token in '.file' directive") ||
+          parseEscapedString(SourceString))
+        return true;
+    } else {
+      return TokError("unexpected token in '.file' directive");
+    }
+  }
 
   if (FileNumber == -1)
     getStreamer().EmitFileDirective(Filename);
   else {
+    MD5::MD5Result *CKMem = nullptr;
+    if (!Checksum.empty()) {
+      Checksum = fromHex(Checksum);
+      if (check(Checksum.size() != 16, "invalid MD5 checksum specified"))
+        return true;
+      CKMem = (MD5::MD5Result *)Ctx.allocate(sizeof(MD5::MD5Result), 1);
+      memcpy(&CKMem->Bytes, Checksum.data(), 16);
+    }
+    if (HasSource) {
+      char *SourceBuf = static_cast<char *>(Ctx.allocate(SourceString.size()));
+      memcpy(SourceBuf, SourceString.data(), SourceString.size());
+      Source = StringRef(SourceBuf, SourceString.size());
+    }
     // If there is -g option as well as debug info from directive file,
     // we turn off -g option, directly use the existing debug info instead.
     if (getContext().getGenDwarfForAssembly())
       getContext().setGenDwarfForAssembly(false);
-    else if (getStreamer().EmitDwarfFileDirective(FileNumber, Directory, Filename) ==
-        0)
-      return Error(FileNumberLoc, "file number already allocated");
+    else {
+      Expected<unsigned> FileNumOrErr = getStreamer().tryEmitDwarfFileDirective(
+          FileNumber, Directory, Filename, CKMem, Source);
+      if (!FileNumOrErr)
+        return Error(DirectiveLoc, toString(FileNumOrErr.takeError()));
+      FileNumber = FileNumOrErr.get();
+    }
   }
 
   return false;
@@ -3611,7 +3621,6 @@ bool AsmParser::parseDirectiveCVInlineSiteId() {
 /// optional items are .loc sub-directives.
 bool AsmParser::parseDirectiveCVLoc() {
   SMLoc DirectiveLoc = getTok().getLoc();
-  SMLoc Loc;
   int64_t FunctionId, FileNumber;
   if (parseCVFunctionId(FunctionId, ".cv_loc") ||
       parseCVFileId(FileNumber, ".cv_loc"))
@@ -3783,6 +3792,20 @@ bool AsmParser::parseDirectiveCVFileChecksumOffset() {
   if (parseToken(AsmToken::EndOfStatement, "Expected End of Statement"))
     return true;
   getStreamer().EmitCVFileChecksumOffsetDirective(FileNo);
+  return false;
+}
+
+/// parseDirectiveCVFPOData
+/// ::= .cv_fpo_data procsym
+bool AsmParser::parseDirectiveCVFPOData() {
+  SMLoc DirLoc = getLexer().getLoc();
+  StringRef ProcName;
+  if (parseIdentifier(ProcName))
+    return TokError("expected symbol name");
+  if (parseEOL("unexpected tokens"))
+    return addErrorSuffix(" in '.cv_fpo_data' directive");
+  MCSymbol *ProcSym = getContext().getOrCreateSymbol(ProcName);
+  getStreamer().EmitCVFPOData(ProcSym, DirLoc);
   return false;
 }
 
@@ -4226,7 +4249,7 @@ bool AsmParser::parseDirectiveMacro(SMLoc DirectiveLoc) {
     eatToEndOfStatement();
   }
 
-  if (lookupMacro(Name)) {
+  if (getContext().lookupMacro(Name)) {
     return Error(DirectiveLoc, "macro '" + Name + "' is already defined");
   }
 
@@ -4234,7 +4257,7 @@ bool AsmParser::parseDirectiveMacro(SMLoc DirectiveLoc) {
   const char *BodyEnd = EndToken.getLoc().getPointer();
   StringRef Body = StringRef(BodyStart, BodyEnd - BodyStart);
   checkForBadMacro(DirectiveLoc, Name, Body, Parameters);
-  defineMacro(Name, MCAsmMacro(Name, Body, std::move(Parameters)));
+  getContext().defineMacro(Name, MCAsmMacro(Name, Body, std::move(Parameters)));
   return false;
 }
 
@@ -4393,10 +4416,10 @@ bool AsmParser::parseDirectivePurgeMacro(SMLoc DirectiveLoc) {
                  "unexpected token in '.purgem' directive"))
     return true;
 
-  if (!lookupMacro(Name))
+  if (!getContext().lookupMacro(Name))
     return Error(DirectiveLoc, "macro '" + Name + "' is not defined");
 
-  undefineMacro(Name);
+  getContext().undefineMacro(Name);
   return false;
 }
 
@@ -5169,6 +5192,7 @@ void AsmParser::initializeDirectiveKindMap() {
   DirectiveKindMap[".cv_stringtable"] = DK_CV_STRINGTABLE;
   DirectiveKindMap[".cv_filechecksums"] = DK_CV_FILECHECKSUMS;
   DirectiveKindMap[".cv_filechecksumoffset"] = DK_CV_FILECHECKSUM_OFFSET;
+  DirectiveKindMap[".cv_fpo_data"] = DK_CV_FPO_DATA;
   DirectiveKindMap[".sleb128"] = DK_SLEB128;
   DirectiveKindMap[".uleb128"] = DK_ULEB128;
   DirectiveKindMap[".cfi_sections"] = DK_CFI_SECTIONS;
@@ -5228,6 +5252,7 @@ void AsmParser::initializeDirectiveKindMap() {
   DirectiveKindMap[".ds.s"] = DK_DS_S;
   DirectiveKindMap[".ds.w"] = DK_DS_W;
   DirectiveKindMap[".ds.x"] = DK_DS_X;
+  DirectiveKindMap[".print"] = DK_PRINT;
 }
 
 MCAsmMacro *AsmParser::parseMacroLikeBody(SMLoc DirectiveLoc) {
@@ -5453,6 +5478,17 @@ bool AsmParser::parseDirectiveMSAlign(SMLoc IDLoc, ParseStatementInfo &Info) {
     return Error(ExprLoc, "literal value not a power of two greater then zero");
 
   Info.AsmRewrites->emplace_back(AOK_Align, IDLoc, 5, Log2_64(IntValue));
+  return false;
+}
+
+bool AsmParser::parseDirectivePrint(SMLoc DirectiveLoc) {
+  const AsmToken StrTok = getTok();
+  Lex();
+  if (StrTok.isNot(AsmToken::String) || StrTok.getString().front() != '"')
+    return Error(DirectiveLoc, "expected double quoted string after .print");
+  if (parseToken(AsmToken::EndOfStatement, "expected end of statement"))
+    return true;
+  llvm::outs() << StrTok.getStringContents() << '\n';
   return false;
 }
 

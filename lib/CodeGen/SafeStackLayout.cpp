@@ -1,4 +1,4 @@
-//===-- SafeStackLayout.cpp - SafeStack frame layout -----------*- C++ -*--===//
+//===- SafeStackLayout.cpp - SafeStack frame layout -----------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,9 +8,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "SafeStackLayout.h"
-
-#include "llvm/IR/Instructions.h"
+#include "SafeStackColoring.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cassert>
 
 using namespace llvm;
 using namespace llvm::safestack;
@@ -36,6 +42,7 @@ LLVM_DUMP_METHOD void StackLayout::print(raw_ostream &OS) {
 void StackLayout::addObject(const Value *V, unsigned Size, unsigned Alignment,
                             const StackColoring::LiveRange &Range) {
   StackObjects.push_back({V, Size, Alignment, Range});
+  ObjectAlignments[V] = Alignment;
   MaxAlignment = std::max(MaxAlignment, Alignment);
 }
 

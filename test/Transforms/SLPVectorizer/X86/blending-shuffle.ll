@@ -134,3 +134,35 @@ define i8 @k(<4 x i8> %x) {
   %3 = sdiv i8 %1, %2
   ret i8 %3
 }
+
+define i8 @k_bb(<4 x i8> %x) {
+; CHECK-LABEL: @k_bb(
+; CHECK-NEXT:    [[X0:%.*]] = extractelement <4 x i8> [[X:%.*]], i32 0
+; CHECK-NEXT:    br label [[BB1:%.*]]
+; CHECK:       bb1:
+; CHECK-NEXT:    [[X3:%.*]] = extractelement <4 x i8> [[X]], i32 3
+; CHECK-NEXT:    [[X0X0:%.*]] = mul i8 [[X0]], [[X0]]
+; CHECK-NEXT:    [[X3X3:%.*]] = mul i8 [[X3]], [[X3]]
+; CHECK-NEXT:    [[TMP1:%.*]] = mul <4 x i8> [[X]], [[X]]
+; CHECK-NEXT:    [[TMP2:%.*]] = add i8 [[X0X0]], [[X3X3]]
+; CHECK-NEXT:    [[TMP3:%.*]] = extractelement <4 x i8> [[TMP1]], i32 1
+; CHECK-NEXT:    [[TMP4:%.*]] = extractelement <4 x i8> [[TMP1]], i32 2
+; CHECK-NEXT:    [[TMP5:%.*]] = add i8 [[TMP3]], [[TMP4]]
+; CHECK-NEXT:    [[TMP6:%.*]] = sdiv i8 [[TMP2]], [[TMP5]]
+; CHECK-NEXT:    ret i8 [[TMP6]]
+;
+  %x0 = extractelement <4 x i8> %x, i32 0
+  br label %bb1
+bb1:
+  %x3 = extractelement <4 x i8> %x, i32 3
+  %x1 = extractelement <4 x i8> %x, i32 1
+  %x2 = extractelement <4 x i8> %x, i32 2
+  %x0x0 = mul i8 %x0, %x0
+  %x3x3 = mul i8 %x3, %x3
+  %x1x1 = mul i8 %x1, %x1
+  %x2x2 = mul i8 %x2, %x2
+  %1 = add i8 %x0x0, %x3x3
+  %2 = add i8 %x1x1, %x2x2
+  %3 = sdiv i8 %1, %2
+  ret i8 %3
+}

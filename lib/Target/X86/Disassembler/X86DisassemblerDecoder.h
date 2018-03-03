@@ -493,7 +493,8 @@ enum VectorExtensionType {
   TYPE_VEX_2B       = 0x1,
   TYPE_VEX_3B       = 0x2,
   TYPE_EVEX         = 0x3,
-  TYPE_XOP          = 0x4
+  TYPE_XOP          = 0x4,
+  TYPE_3DNOW        = 0x5
 };
 
 /// \brief Type for the byte reader that the consumer must provide to
@@ -546,23 +547,25 @@ struct InternalInstruction {
 
   // Prefix state
 
-  // 1 if the prefix byte corresponding to the entry is present; 0 if not
-  uint8_t prefixPresent[0x100];
-  // contains the location (for use with the reader) of the prefix byte
-  uint64_t prefixLocations[0x100];
+  // The possible mandatory prefix
+  uint8_t mandatoryPrefix;
   // The value of the vector extension prefix(EVEX/VEX/XOP), if present
   uint8_t vectorExtensionPrefix[4];
   // The type of the vector extension prefix
   VectorExtensionType vectorExtensionType;
   // The value of the REX prefix, if present
   uint8_t rexPrefix;
-  // The location where a mandatory prefix would have to be (i.e., right before
-  // the opcode, or right before the REX prefix if one is present).
-  uint64_t necessaryPrefixLocation;
   // The segment override type
   SegmentOverride segmentOverride;
   // 1 if the prefix byte, 0xf2 or 0xf3 is xacquire or xrelease
   bool xAcquireRelease;
+
+  // Address-size override
+  bool hasAdSize;
+  // Operand-size override
+  bool hasOpSize;
+  // The repeat prefix if any
+  uint8_t repeatPrefix;
 
   // Sizes of various critical pieces of data, in bytes
   uint8_t registerSize;
@@ -637,9 +640,13 @@ struct InternalInstruction {
   Reg                           reg;
 
   // SIB state
+  SIBIndex                      sibIndexBase;
   SIBIndex                      sibIndex;
   uint8_t                       sibScale;
   SIBBase                       sibBase;
+
+  // Embedded rounding control.
+  uint8_t                       RC;
 
   ArrayRef<OperandSpecifier> operands;
 };

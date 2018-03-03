@@ -8,12 +8,14 @@
 //===---------------------------------------------------------------------===//
 
 #include "MCTargetDesc/AArch64FixupKinds.h"
+#include "MCTargetDesc/AArch64MCExpr.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCFixupKindInfo.h"
+#include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -45,6 +47,7 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
     bool IsCrossSection, const MCAsmBackend &MAB) const {
   auto Modifier = Target.isAbsolute() ? MCSymbolRefExpr::VK_None
                                       : Target.getSymA()->getKind();
+  const MCExpr *Expr = Fixup.getValue();
 
   switch (static_cast<unsigned>(Fixup.getKind())) {
   default: {
@@ -72,6 +75,13 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
     return COFF::IMAGE_REL_ARM64_SECREL;
 
   case AArch64::fixup_aarch64_add_imm12:
+    if (const AArch64MCExpr *A64E = dyn_cast<AArch64MCExpr>(Expr)) {
+      AArch64MCExpr::VariantKind RefKind = A64E->getKind();
+      if (RefKind == AArch64MCExpr::VK_SECREL_LO12)
+        return COFF::IMAGE_REL_ARM64_SECREL_LOW12A;
+      if (RefKind == AArch64MCExpr::VK_SECREL_HI12)
+        return COFF::IMAGE_REL_ARM64_SECREL_HIGH12A;
+    }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12A;
 
   case AArch64::fixup_aarch64_ldst_imm12_scale1:
@@ -79,6 +89,11 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
   case AArch64::fixup_aarch64_ldst_imm12_scale4:
   case AArch64::fixup_aarch64_ldst_imm12_scale8:
   case AArch64::fixup_aarch64_ldst_imm12_scale16:
+    if (const AArch64MCExpr *A64E = dyn_cast<AArch64MCExpr>(Expr)) {
+      AArch64MCExpr::VariantKind RefKind = A64E->getKind();
+      if (RefKind == AArch64MCExpr::VK_SECREL_LO12)
+        return COFF::IMAGE_REL_ARM64_SECREL_LOW12L;
+    }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L;
 
   case AArch64::fixup_aarch64_pcrel_adrp_imm21:
@@ -96,9 +111,10 @@ bool AArch64WinCOFFObjectWriter::recordRelocation(const MCFixup &Fixup) const {
 
 namespace llvm {
 
-MCObjectWriter *createAArch64WinCOFFObjectWriter(raw_pwrite_stream &OS) {
-  MCWinCOFFObjectTargetWriter *MOTW = new AArch64WinCOFFObjectWriter();
-  return createWinCOFFObjectWriter(MOTW, OS);
+std::unique_ptr<MCObjectWriter>
+createAArch64WinCOFFObjectWriter(raw_pwrite_stream &OS) {
+  auto MOTW = llvm::make_unique<AArch64WinCOFFObjectWriter>();
+  return createWinCOFFObjectWriter(std::move(MOTW), OS);
 }
 
 } // end namespace llvm

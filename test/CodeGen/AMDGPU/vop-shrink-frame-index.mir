@@ -44,14 +44,14 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = IMPLICIT_DEF
-    %2, $vcc = V_ADD_I32_e64 %0, %1, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %0, %1, 0, implicit $exec
+    S_ENDPGM 0
 
 ...
 # GCN-LABEL: name: fold_vgpr_fi{{$}}
@@ -65,14 +65,14 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = IMPLICIT_DEF
-    %2, $vcc = V_ADD_I32_e64 %1, %0, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %1, %0, 0, implicit $exec
+    S_ENDPGM 0
 
 ...
 # GCN-LABEL: name: fold_sgpr_fi{{$}}
@@ -87,14 +87,14 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = IMPLICIT_DEF
-    %2, $vcc = V_ADD_I32_e64 %1, %0, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %1, %0, 0, implicit $exec
+    S_ENDPGM 0
 
 ...
 # GCN-LABEL: name: fold_fi_sgpr{{$}}
@@ -109,14 +109,14 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = IMPLICIT_DEF
-    %2, $vcc = V_ADD_I32_e64 %0, %1, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %0, %1, 0, implicit $exec
+    S_ENDPGM 0
 ...
 # TODO: Should probably prefer folding immediate first
 # GCN-LABEL: name: fold_fi_imm{{$}}
@@ -130,14 +130,14 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = V_MOV_B32_e32 999, implicit $exec
-    %2, $vcc = V_ADD_I32_e64 %0, %1, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %0, %1, 0, implicit $exec
+    S_ENDPGM 0
 
 ...
 # GCN-LABEL: name: fold_imm_fi{{$}}
@@ -151,11 +151,11 @@ registers:
   - { id: 2, class: vgpr_32 }
 stack:
   - { id: 0, name: alloca, type: default, offset: 0, size: 128, alignment: 8,
-      callee-saved-register: '', local-offset: 0, di-variable: '', di-expression: '',
-      di-location: '' }
+      callee-saved-register: '', local-offset: 0, debug-info-variable: '',
+      debug-info-expression: '', debug-info-location: '' }
 body:             |
   bb.0:
     %0 = V_MOV_B32_e32 %stack.0.alloca, implicit $exec
     %1 = V_MOV_B32_e32 999, implicit $exec
-    %2, $vcc = V_ADD_I32_e64 %1, %0, implicit $exec
-    S_ENDPGM
+    %2, $vcc = V_ADD_I32_e64 %1, %0, 0, implicit $exec
+    S_ENDPGM 0

@@ -1,9 +1,8 @@
 //===- TargetFrameLoweringImpl.cpp - Implement target frame interface ------==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -19,6 +18,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -30,10 +30,11 @@ using namespace llvm;
 
 TargetFrameLowering::~TargetFrameLowering() = default;
 
-/// The default implementation just looks at attribute "no-frame-pointer-elim".
-bool TargetFrameLowering::noFramePointerElim(const MachineFunction &MF) const {
-  auto Attr = MF.getFunction().getFnAttribute("no-frame-pointer-elim");
-  return Attr.getValueAsString() == "true";
+bool TargetFrameLowering::enableCalleeSaveSkip(const MachineFunction &MF) const {
+  assert(MF.getFunction().hasFnAttribute(Attribute::NoReturn) &&
+         MF.getFunction().hasFnAttribute(Attribute::NoUnwind) &&
+         !MF.getFunction().hasFnAttribute(Attribute::UWTable));
+  return false;
 }
 
 /// Returns the displacement from the frame register to the stack
@@ -71,7 +72,9 @@ void TargetFrameLowering::determineCalleeSaves(MachineFunction &MF,
 
   // When interprocedural register allocation is enabled caller saved registers
   // are preferred over callee saved registers.
-  if (MF.getTarget().Options.EnableIPRA && isSafeForNoCSROpt(MF.getFunction()))
+  if (MF.getTarget().Options.EnableIPRA &&
+      isSafeForNoCSROpt(MF.getFunction()) &&
+      isProfitableForNoCSROpt(MF.getFunction()))
     return;
 
   // Get the callee saved register list...
@@ -83,6 +86,19 @@ void TargetFrameLowering::determineCalleeSaves(MachineFunction &MF,
 
   // In Naked functions we aren't going to save any registers.
   if (MF.getFunction().hasFnAttribute(Attribute::Naked))
+    return;
+
+  // Noreturn+nounwind functions never restore CSR, so no saves are needed.
+  // Purely noreturn functions may still return through throws, so those must
+  // save CSR for caller exception handlers.
+  //
+  // If the function uses longjmp to break out of its current path of
+  // execution we do not need the CSR spills either: setjmp stores all CSRs
+  // it was called with into the jmp_buf, which longjmp then restores.
+  if (MF.getFunction().hasFnAttribute(Attribute::NoReturn) &&
+        MF.getFunction().hasFnAttribute(Attribute::NoUnwind) &&
+        !MF.getFunction().hasFnAttribute(Attribute::UWTable) &&
+        enableCalleeSaveSkip(MF))
     return;
 
   // Functions which call __builtin_unwind_init get all their registers saved.
@@ -100,7 +116,28 @@ unsigned TargetFrameLowering::getStackAlignmentSkew(
   // When HHVM function is called, the stack is skewed as the return address
   // is removed from the stack before we enter the function.
   if (LLVM_UNLIKELY(MF.getFunction().getCallingConv() == CallingConv::HHVM))
-    return MF.getTarget().getPointerSize();
+    return MF.getTarget().getAllocaPointerSize();
 
   return 0;
+}
+
+bool TargetFrameLowering::isSafeForNoCSROpt(const Function &F) {
+  if (!F.hasLocalLinkage() || F.hasAddressTaken() ||
+      !F.hasFnAttribute(Attribute::NoRecurse))
+    return false;
+  // Function should not be optimized as tail call.
+  for (const User *U : F.users())
+    if (auto CS = ImmutableCallSite(U))
+      if (CS.isTailCall())
+        return false;
+  return true;
+}
+
+int TargetFrameLowering::getInitialCFAOffset(const MachineFunction &MF) const {
+  llvm_unreachable("getInitialCFAOffset() not implemented!");
+}
+
+unsigned TargetFrameLowering::getInitialCFARegister(const MachineFunction &MF)
+    const {
+  llvm_unreachable("getInitialCFARegister() not implemented!");
 }

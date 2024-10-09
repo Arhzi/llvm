@@ -1,9 +1,8 @@
 //===- Miscompilation.cpp - Debug program miscompilations -----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -592,9 +591,6 @@ ExtractBlocks(BugDriver &BD,
   if (Linker::linkModules(*ProgClone, std::move(Extracted)))
     exit(1);
 
-  // Set the new program and delete the old one.
-  BD.setNewProgram(std::move(ProgClone));
-
   // Update the list of miscompiled functions.
   MiscompiledFunctions.clear();
 
@@ -603,6 +599,9 @@ ExtractBlocks(BugDriver &BD,
     assert(NewF && "Function not found??");
     MiscompiledFunctions.push_back(NewF);
   }
+
+  // Set the new program and delete the old one.
+  BD.setNewProgram(std::move(ProgClone));
 
   return true;
 }
@@ -706,8 +705,8 @@ static Expected<bool> TestOptimizer(BugDriver &BD, std::unique_ptr<Module> Test,
   if (!Optimized) {
     errs() << " Error running this sequence of passes"
            << " on the input program!\n";
-    BD.setNewProgram(std::move(Test));
     BD.EmitProgressBitcode(*Test, "pass-error", false);
+    BD.setNewProgram(std::move(Test));
     if (Error E = BD.debugOptimizerCrash())
       return std::move(E);
     return false;
@@ -776,15 +775,15 @@ Error BugDriver::debugMiscompilation() {
 
 /// Get the specified modules ready for code generator testing.
 ///
-static void CleanupAndPrepareModules(BugDriver &BD,
-                                     std::unique_ptr<Module> &Test,
-                                     Module *Safe) {
+static std::unique_ptr<Module>
+CleanupAndPrepareModules(BugDriver &BD, std::unique_ptr<Module> Test,
+                         Module *Safe) {
   // Clean up the modules, removing extra cruft that we don't need anymore...
-  Test = BD.performFinalCleanups(Test.get());
+  Test = BD.performFinalCleanups(std::move(Test));
 
   // If we are executing the JIT, we have several nasty issues to take care of.
   if (!BD.isExecutingJIT())
-    return;
+    return Test;
 
   // First, if the main function is in the Safe module, we must add a stub to
   // the Test module to call into it.  Thus, we create a new function `main'
@@ -827,13 +826,14 @@ static void CleanupAndPrepareModules(BugDriver &BD,
 
   // Add the resolver to the Safe module.
   // Prototype: void *getPointerToNamedFunction(const char* Name)
-  Constant *resolverFunc = Safe->getOrInsertFunction(
+  FunctionCallee resolverFunc = Safe->getOrInsertFunction(
       "getPointerToNamedFunction", Type::getInt8PtrTy(Safe->getContext()),
       Type::getInt8PtrTy(Safe->getContext()));
 
   // Use the function we just added to get addresses of functions we need.
   for (Module::iterator F = Safe->begin(), E = Safe->end(); F != E; ++F) {
-    if (F->isDeclaration() && !F->use_empty() && &*F != resolverFunc &&
+    if (F->isDeclaration() && !F->use_empty() &&
+        &*F != resolverFunc.getCallee() &&
         !F->isIntrinsic() /* ignore intrinsics */) {
       Function *TestFn = Test->getFunction(F->getName());
 
@@ -879,7 +879,8 @@ static void CleanupAndPrepareModules(BugDriver &BD,
               BasicBlock::Create(F->getContext(), "lookupfp", FuncWrapper);
 
           // Check to see if we already looked up the value.
-          Value *CachedVal = new LoadInst(Cache, "fpcache", EntryBB);
+          Value *CachedVal =
+              new LoadInst(F->getType(), Cache, "fpcache", EntryBB);
           Value *IsNull = new ICmpInst(*EntryBB, ICmpInst::ICMP_EQ, CachedVal,
                                        NullPtr, "isNull");
           BranchInst::Create(LookupBB, DoCallBB, IsNull, EntryBB);
@@ -911,11 +912,11 @@ static void CleanupAndPrepareModules(BugDriver &BD,
 
           // Pass on the arguments to the real function, return its result
           if (F->getReturnType()->isVoidTy()) {
-            CallInst::Create(FuncPtr, Args, "", DoCallBB);
+            CallInst::Create(FuncTy, FuncPtr, Args, "", DoCallBB);
             ReturnInst::Create(F->getContext(), DoCallBB);
           } else {
             CallInst *Call =
-                CallInst::Create(FuncPtr, Args, "retval", DoCallBB);
+                CallInst::Create(FuncTy, FuncPtr, Args, "retval", DoCallBB);
             ReturnInst::Create(F->getContext(), Call, DoCallBB);
           }
 
@@ -930,6 +931,8 @@ static void CleanupAndPrepareModules(BugDriver &BD,
     errs() << "Bugpoint has a bug, which corrupted a module!!\n";
     abort();
   }
+
+  return Test;
 }
 
 /// This is the predicate function used to check to see if the "Test" portion of
@@ -939,7 +942,7 @@ static void CleanupAndPrepareModules(BugDriver &BD,
 static Expected<bool> TestCodeGenerator(BugDriver &BD,
                                         std::unique_ptr<Module> Test,
                                         std::unique_ptr<Module> Safe) {
-  CleanupAndPrepareModules(BD, Test, Safe.get());
+  Test = CleanupAndPrepareModules(BD, std::move(Test), Safe.get());
 
   SmallString<128> TestModuleBC;
   int TestModuleFD;
@@ -1030,7 +1033,8 @@ Error BugDriver::debugCodeGenerator() {
       SplitFunctionsOutOfModule(ToNotCodeGen.get(), *Funcs, VMap);
 
   // Condition the modules
-  CleanupAndPrepareModules(*this, ToCodeGen, ToNotCodeGen.get());
+  ToCodeGen =
+      CleanupAndPrepareModules(*this, std::move(ToCodeGen), ToNotCodeGen.get());
 
   SmallString<128> TestModuleBC;
   int TestModuleFD;

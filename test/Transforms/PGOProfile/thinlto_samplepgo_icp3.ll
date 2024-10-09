@@ -6,11 +6,11 @@
 
 ; Test to make sure importing and dead stripping works in the
 ; case where the target is a local function that also indirectly calls itself.
-; RUN: llvm-lto2 run -save-temps -o %t3 %t.bc %t2.bc -r %t.bc,fptr,plx -r %t.bc,main,plx -r %t2.bc,_Z6updatei,pl -r %t2.bc,fptr,l -print-imports 2>&1 | FileCheck %s --check-prefix=IMPORTS
+; RUN: llvm-lto2 run -thinlto-threads=1 -save-temps -o %t3 %t.bc %t2.bc -r %t.bc,fptr,plx -r %t.bc,main,plx -r %t2.bc,_Z6updatei,pl -r %t2.bc,fptr,l -print-imports 2>&1 | FileCheck %s --check-prefix=IMPORTS
 ; Make sure we import the promted indirectly called target
 ; IMPORTS: Import _ZL3foov.llvm.0
 
-target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
 @fptr = local_unnamed_addr global void ()* null, align 8

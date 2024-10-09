@@ -6,9 +6,9 @@ define i32 @f1(i32 %p1, i32 %p2, i32 %p3, i32 %p4, i32 %p5) "no-frame-pointer-el
 ; ALL-LABEL: f1:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    movq %rsp, %rbp
-; ALL-NEXT:    .seh_setframe 5, 0
+; ALL-NEXT:    .seh_setframe %rbp, 0
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    movl 48(%rbp), %eax
 ; ALL-NEXT:    popq %rbp
@@ -23,15 +23,15 @@ define void @f2(i32 %p, ...) "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f2:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    pushq %rax
 ; ALL-NEXT:    .seh_stackalloc 8
 ; ALL-NEXT:    movq %rsp, %rbp
-; ALL-NEXT:    .seh_setframe 5, 0
+; ALL-NEXT:    .seh_setframe %rbp, 0
 ; ALL-NEXT:    .seh_endprologue
-; ALL-NEXT:    movq %r9, 48(%rbp)
-; ALL-NEXT:    movq %r8, 40(%rbp)
 ; ALL-NEXT:    movq %rdx, 32(%rbp)
+; ALL-NEXT:    movq %r8, 40(%rbp)
+; ALL-NEXT:    movq %r9, 48(%rbp)
 ; ALL-NEXT:    leaq 32(%rbp), %rax
 ; ALL-NEXT:    movq %rax, (%rbp)
 ; ALL-NEXT:    addq $8, %rsp
@@ -49,9 +49,9 @@ define i8* @f3() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f3:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    movq %rsp, %rbp
-; ALL-NEXT:    .seh_setframe 5, 0
+; ALL-NEXT:    .seh_setframe %rbp, 0
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    movq 8(%rbp), %rax
 ; ALL-NEXT:    popq %rbp
@@ -67,11 +67,11 @@ define i8* @f4() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f4:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    subq $304, %rsp # imm = 0x130
 ; ALL-NEXT:    .seh_stackalloc 304
 ; ALL-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; ALL-NEXT:    .seh_setframe 5, 128
+; ALL-NEXT:    .seh_setframe %rbp, 128
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    movq 184(%rbp), %rax
 ; ALL-NEXT:    addq $304, %rsp # imm = 0x130
@@ -91,11 +91,11 @@ define void @f5() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f5:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    subq $336, %rsp # imm = 0x150
 ; ALL-NEXT:    .seh_stackalloc 336
 ; ALL-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; ALL-NEXT:    .seh_setframe 5, 128
+; ALL-NEXT:    .seh_setframe %rbp, 128
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    leaq -92(%rbp), %rcx
 ; ALL-NEXT:    callq external
@@ -116,11 +116,11 @@ define void @f6(i32 %p, ...) "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f6:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    subq $336, %rsp # imm = 0x150
 ; ALL-NEXT:    .seh_stackalloc 336
 ; ALL-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; ALL-NEXT:    .seh_setframe 5, 128
+; ALL-NEXT:    .seh_setframe %rbp, 128
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    leaq -92(%rbp), %rcx
 ; ALL-NEXT:    callq external
@@ -141,11 +141,11 @@ define i32 @f7(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e) "no-frame-pointer-elim"="
 ; ALL-LABEL: f7:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    subq $304, %rsp # imm = 0x130
 ; ALL-NEXT:    .seh_stackalloc 304
 ; ALL-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; ALL-NEXT:    .seh_setframe 5, 128
+; ALL-NEXT:    .seh_setframe %rbp, 128
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    andq $-64, %rsp
 ; ALL-NEXT:    movl 224(%rbp), %eax
@@ -163,15 +163,15 @@ define i32 @f8(i32 %a, i32 %b, i32 %c, i32 %d, i32 %e) "no-frame-pointer-elim"="
 ; ALL-LABEL: f8:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    pushq %rsi
-; ALL-NEXT:    .seh_pushreg 6
+; ALL-NEXT:    .seh_pushreg %rsi
 ; ALL-NEXT:    pushq %rbx
-; ALL-NEXT:    .seh_pushreg 3
+; ALL-NEXT:    .seh_pushreg %rbx
 ; ALL-NEXT:    subq $352, %rsp # imm = 0x160
 ; ALL-NEXT:    .seh_stackalloc 352
 ; ALL-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; ALL-NEXT:    .seh_setframe 5, 128
+; ALL-NEXT:    .seh_setframe %rbp, 128
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    andq $-64, %rsp
 ; ALL-NEXT:    movq %rsp, %rbx
@@ -205,9 +205,9 @@ define i64 @f9() {
 ; ALL-LABEL: f9:
 ; ALL:       # %bb.0: # %entry
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    movq %rsp, %rbp
-; ALL-NEXT:    .seh_setframe 5, 0
+; ALL-NEXT:    .seh_setframe %rbp, 0
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    pushfq
 ; ALL-NEXT:    popq %rax
@@ -224,71 +224,29 @@ entry:
 declare i64 @dummy()
 
 define i64 @f10(i64* %foo, i64 %bar, i64 %baz) {
-; PUSHF-LABEL: f10:
-; PUSHF:       # %bb.0:
-; PUSHF-NEXT:    pushq %rbp
-; PUSHF-NEXT:    .seh_pushreg 5
-; PUSHF-NEXT:    pushq %rsi
-; PUSHF-NEXT:    .seh_pushreg 6
-; PUSHF-NEXT:    pushq %rdi
-; PUSHF-NEXT:    .seh_pushreg 7
-; PUSHF-NEXT:    subq $32, %rsp
-; PUSHF-NEXT:    .seh_stackalloc 32
-; PUSHF-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; PUSHF-NEXT:    .seh_setframe 5, 32
-; PUSHF-NEXT:    .seh_endprologue
-; PUSHF-NEXT:    movq %rdx, %rsi
-; PUSHF-NEXT:    movq %rdx, %rax
-; PUSHF-NEXT:    lock cmpxchgq %r8, (%rcx)
-; PUSHF-NEXT:    pushfq
-; PUSHF-NEXT:    popq %rdi
-; PUSHF-NEXT:    callq dummy
-; PUSHF-NEXT:    pushq %rdi
-; PUSHF-NEXT:    popfq
-; PUSHF-NEXT:    cmovneq %rsi, %rax
-; PUSHF-NEXT:    addq $32, %rsp
-; PUSHF-NEXT:    popq %rdi
-; PUSHF-NEXT:    popq %rsi
-; PUSHF-NEXT:    popq %rbp
-; PUSHF-NEXT:    retq
-; PUSHF-NEXT:    .seh_handlerdata
-; PUSHF-NEXT:    .text
-; PUSHF-NEXT:    .seh_endproc
-;
-; SAHF-LABEL: f10:
-; SAHF:       # %bb.0:
-; SAHF-NEXT:    pushq %rbp
-; SAHF-NEXT:    .seh_pushreg 5
-; SAHF-NEXT:    pushq %rsi
-; SAHF-NEXT:    .seh_pushreg 6
-; SAHF-NEXT:    pushq %rdi
-; SAHF-NEXT:    .seh_pushreg 7
-; SAHF-NEXT:    subq $32, %rsp
-; SAHF-NEXT:    .seh_stackalloc 32
-; SAHF-NEXT:    leaq {{[0-9]+}}(%rsp), %rbp
-; SAHF-NEXT:    .seh_setframe 5, 32
-; SAHF-NEXT:    .seh_endprologue
-; SAHF-NEXT:    movq %rdx, %rsi
-; SAHF-NEXT:    movq %rdx, %rax
-; SAHF-NEXT:    lock cmpxchgq %r8, (%rcx)
-; SAHF-NEXT:    seto %al
-; SAHF-NEXT:    lahf
-; SAHF-NEXT:    movq %rax, %rdi
-; SAHF-NEXT:    callq dummy
-; SAHF-NEXT:    pushq %rax
-; SAHF-NEXT:    movq %rdi, %rax
-; SAHF-NEXT:    addb $127, %al
-; SAHF-NEXT:    sahf
-; SAHF-NEXT:    popq %rax
-; SAHF-NEXT:    cmovneq %rsi, %rax
-; SAHF-NEXT:    addq $32, %rsp
-; SAHF-NEXT:    popq %rdi
-; SAHF-NEXT:    popq %rsi
-; SAHF-NEXT:    popq %rbp
-; SAHF-NEXT:    retq
-; SAHF-NEXT:    .seh_handlerdata
-; SAHF-NEXT:    .text
-; SAHF-NEXT:    .seh_endproc
+; ALL-LABEL: f10:
+; ALL:       # %bb.0:
+; ALL-NEXT:    pushq %rsi
+; ALL-NEXT:    .seh_pushreg %rsi
+; ALL-NEXT:    pushq %rbx
+; ALL-NEXT:    .seh_pushreg %rbx
+; ALL-NEXT:    subq $40, %rsp
+; ALL-NEXT:    .seh_stackalloc 40
+; ALL-NEXT:    .seh_endprologue
+; ALL-NEXT:    movq %rdx, %rsi
+; ALL-NEXT:    movq %rdx, %rax
+; ALL-NEXT:    lock cmpxchgq %r8, (%rcx)
+; ALL-NEXT:    sete %bl
+; ALL-NEXT:    callq dummy
+; ALL-NEXT:    testb %bl, %bl
+; ALL-NEXT:    cmoveq %rsi, %rax
+; ALL-NEXT:    addq $40, %rsp
+; ALL-NEXT:    popq %rbx
+; ALL-NEXT:    popq %rsi
+; ALL-NEXT:    retq
+; ALL-NEXT:    .seh_handlerdata
+; ALL-NEXT:    .text
+; ALL-NEXT:    .seh_endproc
   %cx = cmpxchg i64* %foo, i64 %bar, i64 %baz seq_cst seq_cst
   %v = extractvalue { i64, i1 } %cx, 0
   %p = extractvalue { i64, i1 } %cx, 1
@@ -301,9 +259,9 @@ define i8* @f11() "no-frame-pointer-elim"="true" {
 ; ALL-LABEL: f11:
 ; ALL:       # %bb.0:
 ; ALL-NEXT:    pushq %rbp
-; ALL-NEXT:    .seh_pushreg 5
+; ALL-NEXT:    .seh_pushreg %rbp
 ; ALL-NEXT:    movq %rsp, %rbp
-; ALL-NEXT:    .seh_setframe 5, 0
+; ALL-NEXT:    .seh_setframe %rbp, 0
 ; ALL-NEXT:    .seh_endprologue
 ; ALL-NEXT:    leaq 8(%rbp), %rax
 ; ALL-NEXT:    popq %rbp

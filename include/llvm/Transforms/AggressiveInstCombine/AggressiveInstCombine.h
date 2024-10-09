@@ -1,17 +1,16 @@
 //===- AggressiveInstCombine.h - AggressiveInstCombine pass -----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 /// \file
 ///
 /// This file provides the primary interface to the aggressive instcombine pass.
 /// This pass is suitable for use in the new pass manager. For a pass that works
-/// with the legacy pass manager, please look for
-/// \c createAggressiveInstCombinerPass() in Scalar.h.
+/// with the legacy pass manager, please use
+/// \c createAggressiveInstCombinerPass().
 ///
 //===----------------------------------------------------------------------===//
 
@@ -29,6 +28,13 @@ class AggressiveInstCombinePass
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
+
+//===----------------------------------------------------------------------===//
+//
+// AggressiveInstCombiner - Combine expression patterns to form expressions with
+// fewer, simple instructions. This pass does not modify the CFG.
+//
+FunctionPass *createAggressiveInstCombinerPass();
 }
 
 #endif

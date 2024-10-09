@@ -1,9 +1,8 @@
 //===------- X86ExpandPseudo.cpp - Expand pseudo instructions -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -27,6 +26,7 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "x86-pseudo"
+#define X86_EXPAND_PSEUDO_NAME "X86 pseudo instruction expansion pass"
 
 namespace {
 class X86ExpandPseudo : public MachineFunctionPass {
@@ -59,11 +59,119 @@ public:
   }
 
 private:
+  void ExpandICallBranchFunnel(MachineBasicBlock *MBB,
+                               MachineBasicBlock::iterator MBBI);
+
   bool ExpandMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool ExpandMBB(MachineBasicBlock &MBB);
 };
 char X86ExpandPseudo::ID = 0;
+
 } // End anonymous namespace.
+
+INITIALIZE_PASS(X86ExpandPseudo, DEBUG_TYPE, X86_EXPAND_PSEUDO_NAME, false,
+                false)
+
+void X86ExpandPseudo::ExpandICallBranchFunnel(
+    MachineBasicBlock *MBB, MachineBasicBlock::iterator MBBI) {
+  MachineBasicBlock *JTMBB = MBB;
+  MachineInstr *JTInst = &*MBBI;
+  MachineFunction *MF = MBB->getParent();
+  const BasicBlock *BB = MBB->getBasicBlock();
+  auto InsPt = MachineFunction::iterator(MBB);
+  ++InsPt;
+
+  std::vector<std::pair<MachineBasicBlock *, unsigned>> TargetMBBs;
+  DebugLoc DL = JTInst->getDebugLoc();
+  MachineOperand Selector = JTInst->getOperand(0);
+  const GlobalValue *CombinedGlobal = JTInst->getOperand(1).getGlobal();
+
+  auto CmpTarget = [&](unsigned Target) {
+    if (Selector.isReg())
+      MBB->addLiveIn(Selector.getReg());
+    BuildMI(*MBB, MBBI, DL, TII->get(X86::LEA64r), X86::R11)
+        .addReg(X86::RIP)
+        .addImm(1)
+        .addReg(0)
+        .addGlobalAddress(CombinedGlobal,
+                          JTInst->getOperand(2 + 2 * Target).getImm())
+        .addReg(0);
+    BuildMI(*MBB, MBBI, DL, TII->get(X86::CMP64rr))
+        .add(Selector)
+        .addReg(X86::R11);
+  };
+
+  auto CreateMBB = [&]() {
+    auto *NewMBB = MF->CreateMachineBasicBlock(BB);
+    MBB->addSuccessor(NewMBB);
+    if (!MBB->isLiveIn(X86::EFLAGS))
+      MBB->addLiveIn(X86::EFLAGS);
+    return NewMBB;
+  };
+
+  auto EmitCondJump = [&](unsigned CC, MachineBasicBlock *ThenMBB) {
+    BuildMI(*MBB, MBBI, DL, TII->get(X86::JCC_1)).addMBB(ThenMBB).addImm(CC);
+
+    auto *ElseMBB = CreateMBB();
+    MF->insert(InsPt, ElseMBB);
+    MBB = ElseMBB;
+    MBBI = MBB->end();
+  };
+
+  auto EmitCondJumpTarget = [&](unsigned CC, unsigned Target) {
+    auto *ThenMBB = CreateMBB();
+    TargetMBBs.push_back({ThenMBB, Target});
+    EmitCondJump(CC, ThenMBB);
+  };
+
+  auto EmitTailCall = [&](unsigned Target) {
+    BuildMI(*MBB, MBBI, DL, TII->get(X86::TAILJMPd64))
+        .add(JTInst->getOperand(3 + 2 * Target));
+  };
+
+  std::function<void(unsigned, unsigned)> EmitBranchFunnel =
+      [&](unsigned FirstTarget, unsigned NumTargets) {
+    if (NumTargets == 1) {
+      EmitTailCall(FirstTarget);
+      return;
+    }
+
+    if (NumTargets == 2) {
+      CmpTarget(FirstTarget + 1);
+      EmitCondJumpTarget(X86::COND_B, FirstTarget);
+      EmitTailCall(FirstTarget + 1);
+      return;
+    }
+
+    if (NumTargets < 6) {
+      CmpTarget(FirstTarget + 1);
+      EmitCondJumpTarget(X86::COND_B, FirstTarget);
+      EmitCondJumpTarget(X86::COND_E, FirstTarget + 1);
+      EmitBranchFunnel(FirstTarget + 2, NumTargets - 2);
+      return;
+    }
+
+    auto *ThenMBB = CreateMBB();
+    CmpTarget(FirstTarget + (NumTargets / 2));
+    EmitCondJump(X86::COND_B, ThenMBB);
+    EmitCondJumpTarget(X86::COND_E, FirstTarget + (NumTargets / 2));
+    EmitBranchFunnel(FirstTarget + (NumTargets / 2) + 1,
+                  NumTargets - (NumTargets / 2) - 1);
+
+    MF->insert(InsPt, ThenMBB);
+    MBB = ThenMBB;
+    MBBI = MBB->end();
+    EmitBranchFunnel(FirstTarget, NumTargets / 2);
+  };
+
+  EmitBranchFunnel(0, (JTInst->getNumOperands() - 2) / 2);
+  for (auto P : TargetMBBs) {
+    MF->insert(InsPt, P.first);
+    BuildMI(P.first, DL, TII->get(X86::TAILJMPd64))
+        .add(JTInst->getOperand(3 + 2 * P.second));
+  }
+  JTMBB->erase(JTInst);
+}
 
 /// If \p MBBI is a pseudo instruction, this method expands
 /// it to the corresponding (sequence of) actual instruction(s).
@@ -86,7 +194,8 @@ bool X86ExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
   case X86::TCRETURNmi64: {
     bool isMem = Opcode == X86::TCRETURNmi || Opcode == X86::TCRETURNmi64;
     MachineOperand &JumpTarget = MBBI->getOperand(0);
-    MachineOperand &StackAdjust = MBBI->getOperand(isMem ? 5 : 1);
+    MachineOperand &StackAdjust = MBBI->getOperand(isMem ? X86::AddrNumOperands
+                                                         : 1);
     assert(StackAdjust.isImm() && "Expecting immediate value.");
 
     // Adjust stack pointer.
@@ -151,19 +260,22 @@ bool X86ExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
                         ? X86::TAILJMPm
                         : (IsWin64 ? X86::TAILJMPm64_REX : X86::TAILJMPm64);
       MachineInstrBuilder MIB = BuildMI(MBB, MBBI, DL, TII->get(Op));
-      for (unsigned i = 0; i != 5; ++i)
+      for (unsigned i = 0; i != X86::AddrNumOperands; ++i)
         MIB.add(MBBI->getOperand(i));
     } else if (Opcode == X86::TCRETURNri64) {
+      JumpTarget.setIsKill();
       BuildMI(MBB, MBBI, DL,
               TII->get(IsWin64 ? X86::TAILJMPr64_REX : X86::TAILJMPr64))
-          .addReg(JumpTarget.getReg(), RegState::Kill);
+          .add(JumpTarget);
     } else {
+      JumpTarget.setIsKill();
       BuildMI(MBB, MBBI, DL, TII->get(X86::TAILJMPr))
-          .addReg(JumpTarget.getReg(), RegState::Kill);
+          .add(JumpTarget);
     }
 
     MachineInstr &NewMI = *std::prev(MBBI);
     NewMI.copyImplicitOps(*MBBI->getParent()->getParent(), *MBBI);
+    MBB.getParent()->moveCallSiteInfo(&*MBBI, &NewMI);
 
     // Delete the pseudo instruction TCRETURN.
     MBB.erase(MBBI);
@@ -176,7 +288,7 @@ bool X86ExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
     assert(DestAddr.isReg() && "Offset should be in register!");
     const bool Uses64BitFramePtr =
         STI->isTarget64BitLP64() || STI->isTargetNaCl64();
-    unsigned StackPtr = TRI->getStackRegister();
+    Register StackPtr = TRI->getStackRegister();
     BuildMI(MBB, MBBI, DL,
             TII->get(Uses64BitFramePtr ? X86::MOV64rr : X86::MOV32rr), StackPtr)
         .addReg(DestAddr.getReg());
@@ -236,7 +348,7 @@ bool X86ExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
     // actualcmpxchg Addr
     // [E|R]BX = SaveRbx
     const MachineOperand &InArg = MBBI->getOperand(6);
-    unsigned SaveRbx = MBBI->getOperand(7).getReg();
+    Register SaveRbx = MBBI->getOperand(7).getReg();
 
     unsigned ActualInArg =
         Opcode == X86::LCMPXCHG8B_SAVE_EBX ? X86::EBX : X86::RBX;
@@ -259,6 +371,9 @@ bool X86ExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
     MBBI->eraseFromParent();
     return true;
   }
+  case TargetOpcode::ICALL_BRANCH_FUNNEL:
+    ExpandICallBranchFunnel(&MBB, MBBI);
+    return true;
   }
   llvm_unreachable("Previous switch has a fallthrough?");
 }

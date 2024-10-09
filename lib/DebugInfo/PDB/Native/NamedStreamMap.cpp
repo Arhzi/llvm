@@ -1,9 +1,8 @@
 //===- NamedStreamMap.cpp - PDB Named Stream Map --------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,26 +26,27 @@
 using namespace llvm;
 using namespace llvm::pdb;
 
-namespace {
-struct NamedStreamMapTraits {
-  static uint16_t hash(StringRef S, const NamedStreamMap &NS) {
-    // In the reference implementation, this uses
-    // HASH Hasher<ULONG*, USHORT*>::hashPbCb(PB pb, size_t cb, ULONG ulMod).
-    // Here, the type HASH is a typedef of unsigned short.
-    // ** It is not a bug that we truncate the result of hashStringV1, in fact
-    //    it is a bug if we do not! **
-    return static_cast<uint16_t>(hashStringV1(S));
-  }
-  static StringRef realKey(uint32_t Offset, const NamedStreamMap &NS) {
-    return NS.getString(Offset);
-  }
-  static uint32_t lowerKey(StringRef S, NamedStreamMap &NS) {
-    return NS.appendStringData(S);
-  }
-};
-} // namespace
+NamedStreamMapTraits::NamedStreamMapTraits(NamedStreamMap &NS) : NS(&NS) {}
 
-NamedStreamMap::NamedStreamMap() {}
+uint16_t NamedStreamMapTraits::hashLookupKey(StringRef S) const {
+  // In the reference implementation, this uses
+  // HASH Hasher<ULONG*, USHORT*>::hashPbCb(PB pb, size_t cb, ULONG ulMod).
+  // Here, the type HASH is a typedef of unsigned short.
+  // ** It is not a bug that we truncate the result of hashStringV1, in fact
+  //    it is a bug if we do not! **
+  // See NMTNI::hash() in the reference implementation.
+  return static_cast<uint16_t>(hashStringV1(S));
+}
+
+StringRef NamedStreamMapTraits::storageKeyToLookupKey(uint32_t Offset) const {
+  return NS->getString(Offset);
+}
+
+uint32_t NamedStreamMapTraits::lookupKeyToStorageKey(StringRef S) {
+  return NS->appendStringData(S);
+}
+
+NamedStreamMap::NamedStreamMap() : HashTraits(*this), OffsetIndexMap(1) {}
 
 Error NamedStreamMap::load(BinaryStreamReader &Stream) {
   uint32_t StringBufferSize;
@@ -98,7 +98,7 @@ uint32_t NamedStreamMap::hashString(uint32_t Offset) const {
 }
 
 bool NamedStreamMap::get(StringRef Stream, uint32_t &StreamNo) const {
-  auto Iter = OffsetIndexMap.find_as<NamedStreamMapTraits>(Stream, *this);
+  auto Iter = OffsetIndexMap.find_as(Stream, HashTraits);
   if (Iter == OffsetIndexMap.end())
     return false;
   StreamNo = (*Iter).second;
@@ -122,5 +122,5 @@ uint32_t NamedStreamMap::appendStringData(StringRef S) {
 }
 
 void NamedStreamMap::set(StringRef Stream, uint32_t StreamNo) {
-  OffsetIndexMap.set_as<NamedStreamMapTraits>(Stream, StreamNo, *this);
+  OffsetIndexMap.set_as(Stream, support::ulittle32_t(StreamNo), HashTraits);
 }

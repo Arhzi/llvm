@@ -1,9 +1,8 @@
 //===- ExtractFunction.cpp - Extract a function from Program --------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -127,7 +126,8 @@ BugDriver::deleteInstructionFromProgram(const Instruction *I,
 }
 
 std::unique_ptr<Module>
-BugDriver::performFinalCleanups(Module *M, bool MayModifySemantics) {
+BugDriver::performFinalCleanups(std::unique_ptr<Module> M,
+                                bool MayModifySemantics) {
   // Make all functions external, so GlobalDCE doesn't delete them...
   for (Module::iterator I = M->begin(), E = M->end(); I != E; ++I)
     I->setLinkage(GlobalValue::ExternalLinkage);
@@ -140,12 +140,11 @@ BugDriver::performFinalCleanups(Module *M, bool MayModifySemantics) {
   else
     CleanupPasses.push_back("deadargelim");
 
-  std::unique_ptr<Module> New = runPassesOn(M, CleanupPasses);
+  std::unique_ptr<Module> New = runPassesOn(M.get(), CleanupPasses);
   if (!New) {
     errs() << "Final cleanups failed.  Sorry. :(  Please report a bug!\n";
     return nullptr;
   }
-  delete M;
   return New;
 }
 
@@ -324,9 +323,9 @@ llvm::SplitFunctionsOutOfModule(Module *M, const std::vector<Function *> &F,
   std::set<Function *> TestFunctions;
   for (unsigned i = 0, e = F.size(); i != e; ++i) {
     Function *TNOF = cast<Function>(VMap[F[i]]);
-    DEBUG(errs() << "Removing function ");
-    DEBUG(TNOF->printAsOperand(errs(), false));
-    DEBUG(errs() << "\n");
+    LLVM_DEBUG(errs() << "Removing function ");
+    LLVM_DEBUG(TNOF->printAsOperand(errs(), false));
+    LLVM_DEBUG(errs() << "\n");
     TestFunctions.insert(cast<Function>(NewVMap[TNOF]));
     DeleteFunctionBody(TNOF); // Function is now external in this module!
   }
@@ -408,11 +407,10 @@ BugDriver::extractMappedBlocksFromModule(const std::vector<BasicBlock *> &BBs,
 
   std::string uniqueFN = "--extract-blocks-file=";
   uniqueFN += Temp->TmpName;
-  const char *ExtraArg = uniqueFN.c_str();
 
   std::vector<std::string> PI;
   PI.push_back("extract-blocks");
-  std::unique_ptr<Module> Ret = runPassesOn(M, PI, 1, &ExtraArg);
+  std::unique_ptr<Module> Ret = runPassesOn(M, PI, {uniqueFN});
 
   if (!Ret) {
     outs() << "*** Basic Block extraction failed, please report a bug!\n";

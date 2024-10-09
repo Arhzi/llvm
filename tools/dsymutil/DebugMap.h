@@ -1,9 +1,8 @@
 //=- tools/dsymutil/DebugMap.h - Generic debug map representation -*- C++ -*-=//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -75,7 +74,7 @@ class DebugMapObject;
 class DebugMap {
   Triple BinaryTriple;
   std::string BinaryPath;
-
+  std::vector<uint8_t> BinaryUUID;
   using ObjectContainer = std::vector<std::unique_ptr<DebugMapObject>>;
 
   ObjectContainer Objects;
@@ -89,8 +88,10 @@ class DebugMap {
   ///@}
 
 public:
-  DebugMap(const Triple &BinaryTriple, StringRef BinaryPath)
-      : BinaryTriple(BinaryTriple), BinaryPath(BinaryPath) {}
+  DebugMap(const Triple &BinaryTriple, StringRef BinaryPath,
+           ArrayRef<uint8_t> BinaryUUID = ArrayRef<uint8_t>())
+      : BinaryTriple(BinaryTriple), BinaryPath(BinaryPath),
+        BinaryUUID(BinaryUUID.begin(), BinaryUUID.end()) {}
 
   using const_iterator = ObjectContainer::const_iterator;
 
@@ -102,6 +103,8 @@ public:
 
   const_iterator end() const { return Objects.end(); }
 
+  unsigned getNumberOfObjects() const { return Objects.size(); }
+
   /// This function adds an DebugMapObject to the list owned by this
   /// debug map.
   DebugMapObject &
@@ -110,6 +113,10 @@ public:
                     uint8_t Type = llvm::MachO::N_OSO);
 
   const Triple &getTriple() const { return BinaryTriple; }
+
+  const ArrayRef<uint8_t> getUUID() const {
+    return ArrayRef<uint8_t>(BinaryUUID);
+  }
 
   StringRef getBinaryPath() const { return BinaryPath; }
 
@@ -174,6 +181,11 @@ public:
     return make_range(Symbols.begin(), Symbols.end());
   }
 
+  bool empty() const { return Symbols.empty(); }
+
+  void addWarning(StringRef Warning) { Warnings.push_back(Warning); }
+  const std::vector<std::string> &getWarnings() const { return Warnings; }
+
   void print(raw_ostream &OS) const;
 #ifndef NDEBUG
   void dump() const;
@@ -191,6 +203,8 @@ private:
   StringMap<SymbolMapping> Symbols;
   DenseMap<uint64_t, DebugMapEntry *> AddressToMapping;
   uint8_t Type;
+
+  std::vector<std::string> Warnings;
 
   /// For YAMLIO support.
   ///@{

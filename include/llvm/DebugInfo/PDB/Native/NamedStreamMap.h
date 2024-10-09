@@ -1,9 +1,8 @@
 //===- NamedStreamMap.h - PDB Named Stream Map ------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +23,17 @@ class BinaryStreamReader;
 class BinaryStreamWriter;
 
 namespace pdb {
+
+class NamedStreamMap;
+
+struct NamedStreamMapTraits {
+  NamedStreamMap *NS;
+
+  explicit NamedStreamMapTraits(NamedStreamMap &NS);
+  uint16_t hashLookupKey(StringRef S) const;
+  StringRef storageKeyToLookupKey(uint32_t Offset) const;
+  uint32_t lookupKeyToStorageKey(StringRef S);
+};
 
 class NamedStreamMap {
   friend class NamedStreamMapBuilder;
@@ -46,9 +56,10 @@ public:
   StringMap<uint32_t> entries() const;
 
 private:
+  NamedStreamMapTraits HashTraits;
   /// Closed hash table from Offset -> StreamNumber, where Offset is the offset
   /// of the stream name in NamesBuffer.
-  HashTable OffsetIndexMap;
+  HashTable<support::ulittle32_t> OffsetIndexMap;
 
   /// Buffer of string data.
   std::vector<char> NamesBuffer;

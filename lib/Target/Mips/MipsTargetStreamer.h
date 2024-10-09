@@ -1,9 +1,8 @@
 //===-- MipsTargetStreamer.h - Mips Target Streamer ------------*- C++ -*--===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,6 +41,12 @@ public:
   virtual void emitDirectiveSetNoMsa();
   virtual void emitDirectiveSetMt();
   virtual void emitDirectiveSetNoMt();
+  virtual void emitDirectiveSetCRC();
+  virtual void emitDirectiveSetNoCRC();
+  virtual void emitDirectiveSetVirt();
+  virtual void emitDirectiveSetNoVirt();
+  virtual void emitDirectiveSetGINV();
+  virtual void emitDirectiveSetNoGINV();
   virtual void emitDirectiveSetAt();
   virtual void emitDirectiveSetAtWithArg(unsigned RegNo);
   virtual void emitDirectiveSetNoAt();
@@ -86,6 +91,7 @@ public:
 
   // PIC support
   virtual void emitDirectiveCpLoad(unsigned RegNo);
+  virtual void emitDirectiveCpLocal(unsigned RegNo);
   virtual bool emitDirectiveCpRestore(int Offset,
                                       function_ref<unsigned()> GetATReg,
                                       SMLoc IDLoc, const MCSubtargetInfo *STI);
@@ -103,6 +109,12 @@ public:
   virtual void emitDirectiveSetFp(MipsABIFlagsSection::FpABIKind Value);
   virtual void emitDirectiveSetOddSPReg();
   virtual void emitDirectiveSetNoOddSPReg();
+  virtual void emitDirectiveModuleCRC();
+  virtual void emitDirectiveModuleNoCRC();
+  virtual void emitDirectiveModuleVirt();
+  virtual void emitDirectiveModuleNoVirt();
+  virtual void emitDirectiveModuleGINV();
+  virtual void emitDirectiveModuleNoGINV();
 
   void emitR(unsigned Opcode, unsigned Reg0, SMLoc IDLoc,
              const MCSubtargetInfo *STI);
@@ -118,6 +130,8 @@ public:
                SMLoc IDLoc, const MCSubtargetInfo *STI);
   void emitRRR(unsigned Opcode, unsigned Reg0, unsigned Reg1, unsigned Reg2,
                SMLoc IDLoc, const MCSubtargetInfo *STI);
+  void emitRRRX(unsigned Opcode, unsigned Reg0, unsigned Reg1, unsigned Reg2,
+                MCOperand Op3, SMLoc IDLoc, const MCSubtargetInfo *STI);
   void emitRRI(unsigned Opcode, unsigned Reg0, unsigned Reg1, int16_t Imm,
                SMLoc IDLoc, const MCSubtargetInfo *STI);
   void emitRRIII(unsigned Opcode, unsigned Reg0, unsigned Reg1, int16_t Imm0,
@@ -142,16 +156,12 @@ public:
                               unsigned BaseReg, int64_t Offset,
                               function_ref<unsigned()> GetATReg, SMLoc IDLoc,
                               const MCSubtargetInfo *STI);
-  void emitStoreWithSymOffset(unsigned Opcode, unsigned SrcReg,
-                              unsigned BaseReg, MCOperand &HiOperand,
-                              MCOperand &LoOperand, unsigned ATReg, SMLoc IDLoc,
-                              const MCSubtargetInfo *STI);
+  void emitSCWithSymOffset(unsigned Opcode, unsigned SrcReg, unsigned BaseReg,
+                           MCOperand &HiOperand, MCOperand &LoOperand,
+                           unsigned ATReg, SMLoc IDLoc,
+                           const MCSubtargetInfo *STI);
   void emitLoadWithImmOffset(unsigned Opcode, unsigned DstReg, unsigned BaseReg,
                              int64_t Offset, unsigned TmpReg, SMLoc IDLoc,
-                             const MCSubtargetInfo *STI);
-  void emitLoadWithSymOffset(unsigned Opcode, unsigned DstReg, unsigned BaseReg,
-                             MCOperand &HiOperand, MCOperand &LoOperand,
-                             unsigned ATReg, SMLoc IDLoc,
                              const MCSubtargetInfo *STI);
   void emitGPRestore(int Offset, SMLoc IDLoc, const MCSubtargetInfo *STI);
 
@@ -188,6 +198,7 @@ protected:
   bool FrameInfoSet;
   int FrameOffset;
   unsigned FrameReg;
+  unsigned GPReg;
   unsigned ReturnReg;
 
 private:
@@ -213,6 +224,12 @@ public:
   void emitDirectiveSetNoMsa() override;
   void emitDirectiveSetMt() override;
   void emitDirectiveSetNoMt() override;
+  void emitDirectiveSetCRC() override;
+  void emitDirectiveSetNoCRC() override;
+  void emitDirectiveSetVirt() override;
+  void emitDirectiveSetNoVirt() override;
+  void emitDirectiveSetGINV() override;
+  void emitDirectiveSetNoGINV() override;
   void emitDirectiveSetAt() override;
   void emitDirectiveSetAtWithArg(unsigned RegNo) override;
   void emitDirectiveSetNoAt() override;
@@ -257,6 +274,7 @@ public:
 
   // PIC support
   void emitDirectiveCpLoad(unsigned RegNo) override;
+  void emitDirectiveCpLocal(unsigned RegNo) override;
 
   /// Emit a .cprestore directive.  If the offset is out of range then it will
   /// be synthesized using the assembler temporary.
@@ -278,6 +296,12 @@ public:
   void emitDirectiveModuleSoftFloat() override;
   void emitDirectiveModuleHardFloat() override;
   void emitDirectiveModuleMT() override;
+  void emitDirectiveModuleCRC() override;
+  void emitDirectiveModuleNoCRC() override;
+  void emitDirectiveModuleVirt() override;
+  void emitDirectiveModuleNoVirt() override;
+  void emitDirectiveModuleGINV() override;
+  void emitDirectiveModuleNoGINV() override;
   void emitDirectiveSetFp(MipsABIFlagsSection::FpABIKind Value) override;
   void emitDirectiveSetOddSPReg() override;
   void emitDirectiveSetNoOddSPReg() override;
@@ -322,6 +346,7 @@ public:
 
   // PIC support
   void emitDirectiveCpLoad(unsigned RegNo) override;
+  void emitDirectiveCpLocal(unsigned RegNo) override;
   bool emitDirectiveCpRestore(int Offset, function_ref<unsigned()> GetATReg,
                               SMLoc IDLoc, const MCSubtargetInfo *STI) override;
   void emitDirectiveCpsetup(unsigned RegNo, int RegOrOffset,

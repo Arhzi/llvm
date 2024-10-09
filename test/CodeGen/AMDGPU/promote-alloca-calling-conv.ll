@@ -80,7 +80,7 @@ declare i32 @foo(i32 addrspace(5)*) #0
 ; ASM: buffer_store_dword
 ; ASM: buffer_store_dword
 ; ASM: s_swappc_b64
-; ASM: ScratchSize: 16396
+; ASM: ScratchSize: 16400
 define amdgpu_kernel void @call_private(i32 addrspace(1)* %out, i32 %in) #0 {
 entry:
   %tmp = alloca [2 x i32], addrspace(5)
@@ -96,5 +96,5 @@ entry:
 
 declare i32 @llvm.amdgcn.workitem.id.x() #1
 
-attributes #0 = { nounwind "amdgpu-max-work-group-size"="64" }
+attributes #0 = { nounwind "amdgpu-flat-work-group-size"="64,64" }
 attributes #1 = { nounwind readnone }

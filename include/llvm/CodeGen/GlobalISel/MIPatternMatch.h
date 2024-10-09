@@ -1,9 +1,8 @@
-//== ----- llvm/CodeGen/GlobalISel/MIPatternMatch.h --------------------- == //
+//==------ llvm/CodeGen/GlobalISel/MIPatternMatch.h -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -22,7 +21,7 @@ namespace llvm {
 namespace MIPatternMatch {
 
 template <typename Reg, typename Pattern>
-bool mi_match(Reg R, MachineRegisterInfo &MRI, Pattern &&P) {
+bool mi_match(Reg R, const MachineRegisterInfo &MRI, Pattern &&P) {
   return P.match(MRI, R);
 }
 
@@ -31,7 +30,6 @@ template <typename SubPatternT> struct OneUse_match {
   SubPatternT SubPat;
   OneUse_match(const SubPatternT &SP) : SubPat(SP) {}
 
-  template <typename OpTy>
   bool match(const MachineRegisterInfo &MRI, unsigned Reg) {
     return MRI.hasOneUse(Reg) && SubPat.match(MRI, Reg);
   }
@@ -43,8 +41,8 @@ inline OneUse_match<SubPat> m_OneUse(const SubPat &SP) {
 }
 
 struct ConstantMatch {
-  uint64_t &CR;
-  ConstantMatch(uint64_t &C) : CR(C) {}
+  int64_t &CR;
+  ConstantMatch(int64_t &C) : CR(C) {}
   bool match(const MachineRegisterInfo &MRI, unsigned Reg) {
     if (auto MaybeCst = getConstantVRegVal(Reg, MRI)) {
       CR = *MaybeCst;
@@ -54,7 +52,7 @@ struct ConstantMatch {
   }
 };
 
-inline ConstantMatch m_ICst(uint64_t &Cst) { return ConstantMatch(Cst); }
+inline ConstantMatch m_ICst(int64_t &Cst) { return ConstantMatch(Cst); }
 
 // TODO: Rework this for different kinds of MachineOperand.
 // Currently assumes the Src for a match is a register.
@@ -73,7 +71,7 @@ inline operand_type_match m_Reg() { return operand_type_match(); }
 /// Matching combinators.
 template <typename... Preds> struct And {
   template <typename MatchSrc>
-  bool match(MachineRegisterInfo &MRI, MatchSrc &&src) {
+  bool match(const MachineRegisterInfo &MRI, MatchSrc &&src) {
     return true;
   }
 };
@@ -85,14 +83,14 @@ struct And<Pred, Preds...> : And<Preds...> {
       : And<Preds...>(std::forward<Preds>(preds)...), P(std::forward<Pred>(p)) {
   }
   template <typename MatchSrc>
-  bool match(MachineRegisterInfo &MRI, MatchSrc &&src) {
+  bool match(const MachineRegisterInfo &MRI, MatchSrc &&src) {
     return P.match(MRI, src) && And<Preds...>::match(MRI, src);
   }
 };
 
 template <typename... Preds> struct Or {
   template <typename MatchSrc>
-  bool match(MachineRegisterInfo &MRI, MatchSrc &&src) {
+  bool match(const MachineRegisterInfo &MRI, MatchSrc &&src) {
     return false;
   }
 };
@@ -103,7 +101,7 @@ struct Or<Pred, Preds...> : Or<Preds...> {
   Or(Pred &&p, Preds &&... preds)
       : Or<Preds...>(std::forward<Preds>(preds)...), P(std::forward<Pred>(p)) {}
   template <typename MatchSrc>
-  bool match(MachineRegisterInfo &MRI, MatchSrc &&src) {
+  bool match(const MachineRegisterInfo &MRI, MatchSrc &&src) {
     return P.match(MRI, src) || Or<Preds...>::match(MRI, src);
   }
 };
@@ -142,6 +140,16 @@ template <> struct bind_helper<LLT> {
   }
 };
 
+template <> struct bind_helper<const ConstantFP *> {
+  static bool bind(const MachineRegisterInfo &MRI, const ConstantFP *&F,
+                   unsigned Reg) {
+    F = getConstantFPVRegVal(Reg, MRI);
+    if (F)
+      return true;
+    return false;
+  }
+};
+
 template <typename Class> struct bind_ty {
   Class &VR;
 
@@ -152,9 +160,12 @@ template <typename Class> struct bind_ty {
   }
 };
 
-inline bind_ty<unsigned> m_Reg(unsigned &R) { return R; }
+inline bind_ty<Register> m_Reg(Register &R) { return R; }
 inline bind_ty<MachineInstr *> m_MInstr(MachineInstr *&MI) { return MI; }
 inline bind_ty<LLT> m_Type(LLT &Ty) { return Ty; }
+
+// Helper for matching G_FCONSTANT
+inline bind_ty<const ConstantFP *> m_GFCst(const ConstantFP *&C) { return C; }
 
 // General helper for all the binary generic MI such as G_ADD/G_SUB etc
 template <typename LHS_P, typename RHS_P, unsigned Opcode,
@@ -164,7 +175,8 @@ struct BinaryOp_match {
   RHS_P R;
 
   BinaryOp_match(const LHS_P &LHS, const RHS_P &RHS) : L(LHS), R(RHS) {}
-  template <typename OpTy> bool match(MachineRegisterInfo &MRI, OpTy &&Op) {
+  template <typename OpTy>
+  bool match(const MachineRegisterInfo &MRI, OpTy &&Op) {
     MachineInstr *TmpMI;
     if (mi_match(Op, MRI, m_MInstr(TmpMI))) {
       if (TmpMI->getOpcode() == Opcode && TmpMI->getNumOperands() == 3) {
@@ -209,6 +221,12 @@ m_GFMul(const LHS &L, const RHS &R) {
 }
 
 template <typename LHS, typename RHS>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_FSUB, false>
+m_GFSub(const LHS &L, const RHS &R) {
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_FSUB, false>(L, R);
+}
+
+template <typename LHS, typename RHS>
 inline BinaryOp_match<LHS, RHS, TargetOpcode::G_AND, true>
 m_GAnd(const LHS &L, const RHS &R) {
   return BinaryOp_match<LHS, RHS, TargetOpcode::G_AND, true>(L, R);
@@ -225,7 +243,8 @@ template <typename SrcTy, unsigned Opcode> struct UnaryOp_match {
   SrcTy L;
 
   UnaryOp_match(const SrcTy &LHS) : L(LHS) {}
-  template <typename OpTy> bool match(MachineRegisterInfo &MRI, OpTy &&Op) {
+  template <typename OpTy>
+  bool match(const MachineRegisterInfo &MRI, OpTy &&Op) {
     MachineInstr *TmpMI;
     if (mi_match(Op, MRI, m_MInstr(TmpMI))) {
       if (TmpMI->getOpcode() == Opcode && TmpMI->getNumOperands() == 2) {
@@ -287,6 +306,16 @@ m_GFPTrunc(const SrcTy &Src) {
 }
 
 template <typename SrcTy>
+inline UnaryOp_match<SrcTy, TargetOpcode::G_FABS> m_GFabs(const SrcTy &Src) {
+  return UnaryOp_match<SrcTy, TargetOpcode::G_FABS>(Src);
+}
+
+template <typename SrcTy>
+inline UnaryOp_match<SrcTy, TargetOpcode::G_FNEG> m_GFNeg(const SrcTy &Src) {
+  return UnaryOp_match<SrcTy, TargetOpcode::G_FNEG>(Src);
+}
+
+template <typename SrcTy>
 inline UnaryOp_match<SrcTy, TargetOpcode::COPY> m_Copy(SrcTy &&Src) {
   return UnaryOp_match<SrcTy, TargetOpcode::COPY>(std::forward<SrcTy>(Src));
 }
@@ -296,7 +325,7 @@ struct CheckType {
   LLT Ty;
   CheckType(const LLT &Ty) : Ty(Ty) {}
 
-  bool match(MachineRegisterInfo &MRI, unsigned Reg) {
+  bool match(const MachineRegisterInfo &MRI, unsigned Reg) {
     return MRI.getType(Reg) == Ty;
   }
 };

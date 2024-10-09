@@ -5,7 +5,7 @@
 ; with -lto-pass-remarks-with-hotness.
 
 ; RUN: llvm-lto -thinlto-action=run \
-; RUN:          -lto-pass-remarks-output=%t-no-th.yaml \
+; RUN:          -lto-pass-remarks-output=%t.yaml \
 ; RUN:          -lto-pass-remarks-with-hotness \
 ; RUN:          -exported-symbol _func2 \
 ; RUN:          -exported-symbol _main %t1.bc %t2.bc 2>&1 | \
@@ -13,25 +13,9 @@
 ; CHECK-NOT: remark:
 ; CHECK-NOT: llvm-lto:
 
-; RUN: llvm-lto -thinlto-action=run \
-; RUN:          -lto-pass-remarks-output=%t-low-th.yaml \
-; RUN:          -lto-pass-remarks-with-hotness \
-; RUN:          -lto-pass-remarks-hotness-threshold=20 \
-; RUN:          -exported-symbol _func2 \
-; RUN:          -exported-symbol _main %t1.bc %t2.bc 2>&1 | \
-
-; RUN: llvm-lto -thinlto-action=run \
-; RUN:          -lto-pass-remarks-output=%t-high-th.yaml \
-; RUN:          -lto-pass-remarks-with-hotness \
-; RUN:          -lto-pass-remarks-hotness-threshold=100 \
-; RUN:          -exported-symbol _func2 \
-; RUN:          -exported-symbol _main %t1.bc %t2.bc 2>&1 | \
-
 
 ; Verify that bar is imported and inlined into foo
-; RUN: cat %t-no-th.yaml.thin.0.yaml | FileCheck %s -check-prefix=YAML1
-; RUN: cat %t-low-th.yaml.thin.0.yaml | FileCheck %s -check-prefix=YAML1
-; RUN: cat %t-high-th.yaml.thin.0.yaml | FileCheck %s -allow-empty -check-prefix=YAML1_TH_HIGH
+; RUN: cat %t.yaml.thin.0.yaml | FileCheck %s -check-prefix=YAML1
 ; YAML1:      --- !Passed
 ; YAML1-NEXT: Pass:            inline
 ; YAML1-NEXT: Name:            Inlined
@@ -41,20 +25,17 @@
 ; YAML1-NEXT:   - Callee:          foo
 ; YAML1-NEXT:   - String:          ' inlined into '
 ; YAML1-NEXT:   - Caller:          main
-; YAML1-NEXT:   - String:          ' with cost='
+; YAML1-NEXT:   - String:          ' with '
+; YAML1-NEXT:   - String:          '(cost='
 ; YAML1-NEXT:   - Cost:            '-30'
-; YAML1-NEXT:   - String:          ' (threshold='
+; YAML1-NEXT:   - String:          ', threshold='
 ; YAML1-NEXT:   - Threshold:       '337'
 ; YAML1-NEXT:   - String:          ')'
 ; YAML1-NEXT: ...
 
-; YAML1_TH_HIGH-NOT: Name:            Inlined
-
 
 ; Verify that bar is imported and inlined into foo
-; RUN: cat %t-no-th.yaml.thin.1.yaml | FileCheck %s -check-prefix=YAML2
-; RUN: cat %t-low-th.yaml.thin.1.yaml | FileCheck %s -allow-empty -check-prefix=YAML2_TH_HIGH
-; RUN: cat %t-high-th.yaml.thin.1.yaml | FileCheck %s -allow-empty -check-prefix=YAML2_TH_HIGH
+; RUN: cat %t.yaml.thin.1.yaml | FileCheck %s -check-prefix=YAML2
 ; YAML2:      --- !Passed
 ; YAML2-NEXT: Pass:            inline
 ; YAML2-NEXT: Name:            Inlined
@@ -63,16 +44,16 @@
 ; YAML2-NEXT:   - Callee:          bar
 ; YAML2-NEXT:   - String:          ' inlined into '
 ; YAML2-NEXT:   - Caller:          foo
-; YAML2-NEXT:   - String:          ' with cost='
+; YAML2-NEXT:   - String:          ' with '
+; YAML2-NEXT:   - String:          '(cost='
 ; YAML2-NEXT:   - Cost:            '-30'
-; YAML2-NEXT:   - String:          ' (threshold='
+; YAML2-NEXT:   - String:          ', threshold='
 ; YAML2-NEXT:   - Threshold:       '337'
 ; YAML2-NEXT:   - String:          ')'
 ; YAML2-NEXT: ...
 
-; YAML2_TH_HIGH-NOT: Name:            Inlined
 
-target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.11.0"
 
 define i32 @bar() {

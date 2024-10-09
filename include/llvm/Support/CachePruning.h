@@ -1,9 +1,8 @@
 //=- CachePruning.h - Helper to manage the pruning of a cache dir -*- C++ -*-=//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -52,9 +51,11 @@ struct CachePruningPolicy {
   /// the number of files based pruning.
   ///
   /// This defaults to 1000000 because with that many files there are
-  /// diminishing returns on the effectiveness of the cache, and some file
-  /// systems have a limit on how many files can be contained in a directory
-  /// (notably ext4, which is limited to around 6000000 files).
+  /// diminishing returns on the effectiveness of the cache. Some systems have a
+  /// limit on total number of files, and some also limit the number of files
+  /// per directory, such as Linux ext4, with the default setting (block size is
+  /// 4096 and large_dir disabled), there is a per-directory entry limit of
+  /// 508*510*floor(4096/(40+8))~=20M for average filename length of 40.
   uint64_t MaxSizeFiles = 1000000;
 };
 

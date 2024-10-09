@@ -1,9 +1,8 @@
 //===---- X86IndirectBranchTracking.cpp - Enables CET IBT mechanism -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -22,7 +21,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 
 using namespace llvm;
@@ -58,7 +56,8 @@ private:
   /// Adds a new ENDBR instruction to the begining of the MBB.
   /// The function will not add it if already exists.
   /// It will add ENDBR32 or ENDBR64 opcode, depending on the target.
-  void addENDBR(MachineBasicBlock &MBB) const;
+  /// \returns true if the ENDBR was added and false otherwise.
+  bool addENDBR(MachineBasicBlock &MBB, MachineBasicBlock::iterator I) const;
 };
 
 } // end anonymous namespace
@@ -69,26 +68,36 @@ FunctionPass *llvm::createX86IndirectBranchTrackingPass() {
   return new X86IndirectBranchTrackingPass();
 }
 
-void X86IndirectBranchTrackingPass::addENDBR(MachineBasicBlock &MBB) const {
+bool X86IndirectBranchTrackingPass::addENDBR(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator I) const {
   assert(TII && "Target instruction info was not initialized");
   assert((X86::ENDBR64 == EndbrOpcode || X86::ENDBR32 == EndbrOpcode) &&
          "Unexpected Endbr opcode");
 
-  auto MI = MBB.begin();
-  // If the MBB is empty or the first instruction is not ENDBR,
-  // add the ENDBR instruction to the beginning of the MBB.
-  if (MI == MBB.end() || EndbrOpcode != MI->getOpcode()) {
-    BuildMI(MBB, MI, MBB.findDebugLoc(MI), TII->get(EndbrOpcode));
-    NumEndBranchAdded++;
+  // If the MBB/I is empty or the current instruction is not ENDBR,
+  // insert ENDBR instruction to the location of I.
+  if (I == MBB.end() || I->getOpcode() != EndbrOpcode) {
+    BuildMI(MBB, I, MBB.findDebugLoc(I), TII->get(EndbrOpcode));
+    ++NumEndBranchAdded;
+    return true;
   }
+  return false;
+}
+
+static bool IsCallReturnTwice(llvm::MachineOperand &MOp) {
+  if (!MOp.isGlobal())
+    return false;
+  auto *CalleeFn = dyn_cast<Function>(MOp.getGlobal());
+  if (!CalleeFn)
+    return false;
+  AttributeList Attrs = CalleeFn->getAttributes();
+  if (Attrs.hasAttribute(AttributeList::FunctionIndex, Attribute::ReturnsTwice))
+    return true;
+  return false;
 }
 
 bool X86IndirectBranchTrackingPass::runOnMachineFunction(MachineFunction &MF) {
   const X86Subtarget &SubTarget = MF.getSubtarget<X86Subtarget>();
-
-  // Make sure that the target supports ENDBR instruction.
-  if (!SubTarget.hasIBT())
-    return false;
 
   // Check that the cf-protection-branch is enabled.
   Metadata *isCFProtectionSupported =
@@ -103,50 +112,27 @@ bool X86IndirectBranchTrackingPass::runOnMachineFunction(MachineFunction &MF) {
   EndbrOpcode = SubTarget.is64Bit() ? X86::ENDBR64 : X86::ENDBR32;
 
   // Non-internal function or function whose address was taken, can be
-  // invoked through indirect calls. Mark the first BB with ENDBR instruction.
-  // TODO: Do not add ENDBR instruction in case notrack attribute is used.
-  if (MF.getFunction().hasAddressTaken() ||
-      !MF.getFunction().hasLocalLinkage()) {
+  // accessed through indirect calls. Mark the first BB with ENDBR instruction
+  // unless nocf_check attribute is used.
+  if ((MF.getFunction().hasAddressTaken() ||
+       !MF.getFunction().hasLocalLinkage()) &&
+      !MF.getFunction().doesNoCfCheck()) {
     auto MBB = MF.begin();
-    addENDBR(*MBB);
-    Changed = true;
+    Changed |= addENDBR(*MBB, MBB->begin());
   }
 
   for (auto &MBB : MF) {
-    // Find all basic blocks that thier address was taken (for example
+    // Find all basic blocks that their address was taken (for example
     // in the case of indirect jump) and add ENDBR instruction.
-    if (MBB.hasAddressTaken()) {
-      addENDBR(MBB);
-      Changed = true;
+    if (MBB.hasAddressTaken())
+      Changed |= addENDBR(MBB, MBB.begin());
+
+    for (MachineBasicBlock::iterator I = MBB.begin(); I != MBB.end(); ++I) {
+      if (!I->isCall())
+        continue;
+      if (IsCallReturnTwice(I->getOperand(0)))
+        Changed |= addENDBR(MBB, std::next(I));
     }
   }
-
-  // Adds ENDBR instructions to MBB destinations of the jump table.
-  // TODO: In case of more than 50 destinations, do not add ENDBR and
-  // instead add DS_PREFIX.
-  if (MachineJumpTableInfo *JTI = MF.getJumpTableInfo()) {
-    for (const auto &JT : JTI->getJumpTables()) {
-      for (auto *MBB : JT.MBBs) {
-	// This assert verifies the assumption that this MBB has an indirect
-	// jump terminator in one of its predecessor.
-	// Jump tables are generated when lowering switch-case statements or
-	// setjmp/longjump functions. As a result only indirect jumps use jump
-	// tables.
-        #ifndef NDEBUG
-        bool hasIndirectJumpTerm = false;
-        for (auto &PredMBB : MBB->predecessors())
-          for (auto &TermI : PredMBB->terminators())
-            if (TermI.isIndirectBranch())
-              hasIndirectJumpTerm = true;
-        assert(hasIndirectJumpTerm &&
-               "The MBB is not the destination of an indirect jump");
-	(void)hasIndirectJumpTerm;
-	#endif
-        addENDBR(*MBB);
-        Changed = true;
-      }
-    }
-  }
-
   return Changed;
 }

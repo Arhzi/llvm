@@ -1,9 +1,8 @@
 //===- KaleidoscopeJIT.h - A simple JIT for Kaleidoscope --------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -32,6 +31,7 @@
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include <algorithm>
@@ -46,47 +46,48 @@ namespace orc {
 
 class KaleidoscopeJIT {
 private:
-  SymbolStringPool SSP;
   ExecutionSession ES;
   std::map<VModuleKey, std::shared_ptr<SymbolResolver>> Resolvers;
   std::unique_ptr<TargetMachine> TM;
   const DataLayout DL;
-  RTDyldObjectLinkingLayer ObjectLayer;
-  IRCompileLayer<decltype(ObjectLayer), SimpleCompiler> CompileLayer;
+  LegacyRTDyldObjectLinkingLayer ObjectLayer;
+  LegacyIRCompileLayer<decltype(ObjectLayer), SimpleCompiler> CompileLayer;
 
   using OptimizeFunction =
-      std::function<std::shared_ptr<Module>(std::shared_ptr<Module>)>;
+      std::function<std::unique_ptr<Module>(std::unique_ptr<Module>)>;
 
-  IRTransformLayer<decltype(CompileLayer), OptimizeFunction> OptimizeLayer;
+  LegacyIRTransformLayer<decltype(CompileLayer), OptimizeFunction> OptimizeLayer;
 
   std::unique_ptr<JITCompileCallbackManager> CompileCallbackManager;
-  CompileOnDemandLayer<decltype(OptimizeLayer)> CODLayer;
+  LegacyCompileOnDemandLayer<decltype(OptimizeLayer)> CODLayer;
 
 public:
   KaleidoscopeJIT()
-      : ES(SSP), TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
-        ObjectLayer(ES,
+      : TM(EngineBuilder().selectTarget()), DL(TM->createDataLayout()),
+        ObjectLayer(AcknowledgeORCv1Deprecation, ES,
                     [this](VModuleKey K) {
-                      return RTDyldObjectLinkingLayer::Resources{
+                      return LegacyRTDyldObjectLinkingLayer::Resources{
                           std::make_shared<SectionMemoryManager>(),
                           Resolvers[K]};
                     }),
-        CompileLayer(ObjectLayer, SimpleCompiler(*TM)),
-        OptimizeLayer(CompileLayer,
-                      [this](std::shared_ptr<Module> M) {
+        CompileLayer(AcknowledgeORCv1Deprecation, ObjectLayer,
+                     SimpleCompiler(*TM)),
+        OptimizeLayer(AcknowledgeORCv1Deprecation, CompileLayer,
+                      [this](std::unique_ptr<Module> M) {
                         return optimizeModule(std::move(M));
                       }),
-        CompileCallbackManager(
-            orc::createLocalCompileCallbackManager(TM->getTargetTriple(), 0)),
-        CODLayer(ES, OptimizeLayer,
-                 [&](orc::VModuleKey K) { return Resolvers[K]; },
-                 [&](orc::VModuleKey K, std::shared_ptr<SymbolResolver> R) {
-                   Resolvers[K] = std::move(R);
-                 },
-                 [](Function &F) { return std::set<Function *>({&F}); },
-                 *CompileCallbackManager,
-                 orc::createLocalIndirectStubsManagerBuilder(
-                     TM->getTargetTriple())) {
+        CompileCallbackManager(cantFail(orc::createLocalCompileCallbackManager(
+            TM->getTargetTriple(), ES, 0))),
+        CODLayer(
+            AcknowledgeORCv1Deprecation, ES, OptimizeLayer,
+            [&](orc::VModuleKey K) { return Resolvers[K]; },
+            [&](orc::VModuleKey K, std::shared_ptr<SymbolResolver> R) {
+              Resolvers[K] = std::move(R);
+            },
+            [](Function &F) { return std::set<Function *>({&F}); },
+            *CompileCallbackManager,
+            orc::createLocalIndirectStubsManagerBuilder(
+                TM->getTargetTriple())) {
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
   }
 
@@ -98,6 +99,7 @@ public:
 
     // Build a resolver and associate it with the new key.
     Resolvers[K] = createLegacyLookupResolver(
+        ES,
         [this](const std::string &Name) -> JITSymbol {
           if (auto Sym = CompileLayer.findSymbol(Name, false))
             return Sym;
@@ -127,9 +129,9 @@ public:
   }
 
 private:
-  std::shared_ptr<Module> optimizeModule(std::shared_ptr<Module> M) {
+  std::unique_ptr<Module> optimizeModule(std::unique_ptr<Module> M) {
     // Create a function pass manager.
-    auto FPM = llvm::make_unique<legacy::FunctionPassManager>(M.get());
+    auto FPM = std::make_unique<legacy::FunctionPassManager>(M.get());
 
     // Add some optimizations.
     FPM->add(createInstructionCombiningPass());

@@ -1,9 +1,8 @@
 //===- llvm/Support/Parallel.h - Parallel algorithms ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,14 +17,6 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-
-#if defined(_MSC_VER) && LLVM_ENABLE_THREADS
-#pragma warning(push)
-#pragma warning(disable : 4530)
-#include <concrt.h>
-#include <ppl.h>
-#pragma warning(pop)
-#endif
 
 namespace llvm {
 
@@ -56,12 +47,12 @@ public:
   ~Latch() { sync(); }
 
   void inc() {
-    std::unique_lock<std::mutex> lock(Mutex);
+    std::lock_guard<std::mutex> lock(Mutex);
     ++Count;
   }
 
   void dec() {
-    std::unique_lock<std::mutex> lock(Mutex);
+    std::lock_guard<std::mutex> lock(Mutex);
     if (--Count == 0)
       Cond.notify_all();
   }
@@ -74,33 +65,20 @@ public:
 
 class TaskGroup {
   Latch L;
+  bool Parallel;
 
 public:
+  TaskGroup();
+  ~TaskGroup();
+
   void spawn(std::function<void()> f);
 
   void sync() const { L.sync(); }
 };
 
-#if defined(_MSC_VER)
-template <class RandomAccessIterator, class Comparator>
-void parallel_sort(RandomAccessIterator Start, RandomAccessIterator End,
-                   const Comparator &Comp) {
-  concurrency::parallel_sort(Start, End, Comp);
-}
-template <class IterTy, class FuncTy>
-void parallel_for_each(IterTy Begin, IterTy End, FuncTy Fn) {
-  concurrency::parallel_for_each(Begin, End, Fn);
-}
-
-template <class IndexTy, class FuncTy>
-void parallel_for_each_n(IndexTy Begin, IndexTy End, FuncTy Fn) {
-  concurrency::parallel_for(Begin, End, Fn);
-}
-
-#else
 const ptrdiff_t MinParallelSize = 1024;
 
-/// \brief Inclusive median.
+/// Inclusive median.
 template <class RandomAccessIterator, class Comparator>
 RandomAccessIterator medianOf3(RandomAccessIterator Start,
                                RandomAccessIterator End,
@@ -118,7 +96,7 @@ void parallel_quick_sort(RandomAccessIterator Start, RandomAccessIterator End,
                          const Comparator &Comp, TaskGroup &TG, size_t Depth) {
   // Do a sequential sort for small inputs.
   if (std::distance(Start, End) < detail::MinParallelSize || Depth == 0) {
-    std::sort(Start, End, Comp);
+    llvm::sort(Start, End, Comp);
     return;
   }
 
@@ -185,8 +163,6 @@ void parallel_for_each_n(IndexTy Begin, IndexTy End, FuncTy Fn) {
 
 #endif
 
-#endif
-
 template <typename Iter>
 using DefComparator =
     std::less<typename std::iterator_traits<Iter>::value_type>;
@@ -200,7 +176,7 @@ void sort(Policy policy, RandomAccessIterator Start, RandomAccessIterator End,
           const Comparator &Comp = Comparator()) {
   static_assert(is_execution_policy<Policy>::value,
                 "Invalid execution policy!");
-  std::sort(Start, End, Comp);
+  llvm::sort(Start, End, Comp);
 }
 
 template <class Policy, class IterTy, class FuncTy>

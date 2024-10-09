@@ -1,9 +1,8 @@
 //===-- MCJIT.h - Class definition for the MCJIT ----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,10 +13,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
-#include "llvm/ExecutionEngine/ObjectMemoryBuffer.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/ExecutionEngine/RuntimeDyld.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/SmallVectorMemoryBuffer.h"
 
 namespace llvm {
 class MCJIT;
@@ -42,6 +41,7 @@ public:
 private:
   MCJIT &ParentEngine;
   std::shared_ptr<LegacyJITSymbolResolver> ClientResolver;
+  void anchor() override;
 };
 
 // About Module states: added->loaded->finalized.
@@ -330,9 +330,9 @@ protected:
   /// the future.
   std::unique_ptr<MemoryBuffer> emitObject(Module *M);
 
-  void NotifyObjectEmitted(const object::ObjectFile& Obj,
-                           const RuntimeDyld::LoadedObjectInfo &L);
-  void NotifyFreeingObject(const object::ObjectFile& Obj);
+  void notifyObjectLoaded(const object::ObjectFile &Obj,
+                          const RuntimeDyld::LoadedObjectInfo &L);
+  void notifyFreeingObject(const object::ObjectFile &Obj);
 
   JITSymbol findExistingSymbol(const std::string &Name);
   Module *findModuleForSymbol(const std::string &Name, bool CheckFunctionsOnly);

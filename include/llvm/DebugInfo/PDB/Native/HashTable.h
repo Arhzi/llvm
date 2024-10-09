@@ -1,9 +1,8 @@
 //===- HashTable.h - PDB Hash Table -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,6 +11,9 @@
 
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/ADT/iterator.h"
+#include "llvm/DebugInfo/PDB/Native/RawError.h"
+#include "llvm/Support/BinaryStreamReader.h"
+#include "llvm/Support/BinaryStreamWriter.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include <cstdint>
@@ -26,73 +28,204 @@ class BinaryStreamWriter;
 
 namespace pdb {
 
-class HashTable;
+Error readSparseBitVector(BinaryStreamReader &Stream, SparseBitVector<> &V);
+Error writeSparseBitVector(BinaryStreamWriter &Writer, SparseBitVector<> &Vec);
 
+template <typename ValueT> class HashTable;
+
+template <typename ValueT>
 class HashTableIterator
-    : public iterator_facade_base<HashTableIterator, std::forward_iterator_tag,
-                                  std::pair<uint32_t, uint32_t>> {
-  friend HashTable;
+    : public iterator_facade_base<HashTableIterator<ValueT>,
+                                  std::forward_iterator_tag,
+                                  const std::pair<uint32_t, ValueT>> {
+  friend HashTable<ValueT>;
 
-  HashTableIterator(const HashTable &Map, uint32_t Index, bool IsEnd);
+  HashTableIterator(const HashTable<ValueT> &Map, uint32_t Index,
+                    bool IsEnd)
+      : Map(&Map), Index(Index), IsEnd(IsEnd) {}
 
 public:
-  HashTableIterator(const HashTable &Map);
+  HashTableIterator(const HashTable<ValueT> &Map) : Map(&Map) {
+    int I = Map.Present.find_first();
+    if (I == -1) {
+      Index = 0;
+      IsEnd = true;
+    } else {
+      Index = static_cast<uint32_t>(I);
+      IsEnd = false;
+    }
+  }
 
-  HashTableIterator &operator=(const HashTableIterator &R);
-  bool operator==(const HashTableIterator &R) const;
-  const std::pair<uint32_t, uint32_t> &operator*() const;
-  HashTableIterator &operator++();
+  HashTableIterator &operator=(const HashTableIterator &R) {
+    Map = R.Map;
+    return *this;
+  }
+  bool operator==(const HashTableIterator &R) const {
+    if (IsEnd && R.IsEnd)
+      return true;
+    if (IsEnd != R.IsEnd)
+      return false;
+
+    return (Map == R.Map) && (Index == R.Index);
+  }
+  const std::pair<uint32_t, ValueT> &operator*() const {
+    assert(Map->Present.test(Index));
+    return Map->Buckets[Index];
+  }
+
+  // Implement postfix op++ in terms of prefix op++ by using the superclass
+  // implementation.
+  using iterator_facade_base<HashTableIterator<ValueT>,
+                             std::forward_iterator_tag,
+                             const std::pair<uint32_t, ValueT>>::operator++;
+  HashTableIterator &operator++() {
+    while (Index < Map->Buckets.size()) {
+      ++Index;
+      if (Map->Present.test(Index))
+        return *this;
+    }
+
+    IsEnd = true;
+    return *this;
+  }
 
 private:
   bool isEnd() const { return IsEnd; }
   uint32_t index() const { return Index; }
 
-  const HashTable *Map;
+  const HashTable<ValueT> *Map;
   uint32_t Index;
   bool IsEnd;
 };
 
+template <typename ValueT>
 class HashTable {
-  friend class HashTableIterator;
-
   struct Header {
     support::ulittle32_t Size;
     support::ulittle32_t Capacity;
   };
 
-  using BucketList = std::vector<std::pair<uint32_t, uint32_t>>;
+  using BucketList = std::vector<std::pair<uint32_t, ValueT>>;
 
 public:
-  HashTable();
-  explicit HashTable(uint32_t Capacity);
+  using const_iterator = HashTableIterator<ValueT>;
+  friend const_iterator;
 
-  Error load(BinaryStreamReader &Stream);
+  HashTable() { Buckets.resize(8); }
+  explicit HashTable(uint32_t Capacity) {
+    Buckets.resize(Capacity);
+  }
 
-  uint32_t calculateSerializedLength() const;
-  Error commit(BinaryStreamWriter &Writer) const;
+  Error load(BinaryStreamReader &Stream) {
+    const Header *H;
+    if (auto EC = Stream.readObject(H))
+      return EC;
+    if (H->Capacity == 0)
+      return make_error<RawError>(raw_error_code::corrupt_file,
+                                  "Invalid Hash Table Capacity");
+    if (H->Size > maxLoad(H->Capacity))
+      return make_error<RawError>(raw_error_code::corrupt_file,
+                                  "Invalid Hash Table Size");
 
-  void clear();
+    Buckets.resize(H->Capacity);
 
-  uint32_t capacity() const;
-  uint32_t size() const;
+    if (auto EC = readSparseBitVector(Stream, Present))
+      return EC;
+    if (Present.count() != H->Size)
+      return make_error<RawError>(raw_error_code::corrupt_file,
+                                  "Present bit vector does not match size!");
 
-  HashTableIterator begin() const;
-  HashTableIterator end() const;
+    if (auto EC = readSparseBitVector(Stream, Deleted))
+      return EC;
+    if (Present.intersects(Deleted))
+      return make_error<RawError>(raw_error_code::corrupt_file,
+                                  "Present bit vector intersects deleted!");
 
-  /// Find the entry with the specified key value.
-  HashTableIterator find(uint32_t K) const;
+    for (uint32_t P : Present) {
+      if (auto EC = Stream.readInteger(Buckets[P].first))
+        return EC;
+      const ValueT *Value;
+      if (auto EC = Stream.readObject(Value))
+        return EC;
+      Buckets[P].second = *Value;
+    }
+
+    return Error::success();
+  }
+
+  uint32_t calculateSerializedLength() const {
+    uint32_t Size = sizeof(Header);
+
+    constexpr int BitsPerWord = 8 * sizeof(uint32_t);
+
+    int NumBitsP = Present.find_last() + 1;
+    int NumBitsD = Deleted.find_last() + 1;
+
+    uint32_t NumWordsP = alignTo(NumBitsP, BitsPerWord) / BitsPerWord;
+    uint32_t NumWordsD = alignTo(NumBitsD, BitsPerWord) / BitsPerWord;
+
+    // Present bit set number of words (4 bytes), followed by that many actual
+    // words (4 bytes each).
+    Size += sizeof(uint32_t);
+    Size += NumWordsP * sizeof(uint32_t);
+
+    // Deleted bit set number of words (4 bytes), followed by that many actual
+    // words (4 bytes each).
+    Size += sizeof(uint32_t);
+    Size += NumWordsD * sizeof(uint32_t);
+
+    // One (Key, ValueT) pair for each entry Present.
+    Size += (sizeof(uint32_t) + sizeof(ValueT)) * size();
+
+    return Size;
+  }
+
+  Error commit(BinaryStreamWriter &Writer) const {
+    Header H;
+    H.Size = size();
+    H.Capacity = capacity();
+    if (auto EC = Writer.writeObject(H))
+      return EC;
+
+    if (auto EC = writeSparseBitVector(Writer, Present))
+      return EC;
+
+    if (auto EC = writeSparseBitVector(Writer, Deleted))
+      return EC;
+
+    for (const auto &Entry : *this) {
+      if (auto EC = Writer.writeInteger(Entry.first))
+        return EC;
+      if (auto EC = Writer.writeObject(Entry.second))
+        return EC;
+    }
+    return Error::success();
+  }
+
+  void clear() {
+    Buckets.resize(8);
+    Present.clear();
+    Deleted.clear();
+  }
+
+  bool empty() const { return size() == 0; }
+  uint32_t capacity() const { return Buckets.size(); }
+  uint32_t size() const { return Present.count(); }
+
+  const_iterator begin() const { return const_iterator(*this); }
+  const_iterator end() const { return const_iterator(*this, 0, true); }
 
   /// Find the entry whose key has the specified hash value, using the specified
   /// traits defining hash function and equality.
-  template <typename Traits, typename Key, typename Context>
-  HashTableIterator find_as(const Key &K, const Context &Ctx) const {
-    uint32_t H = Traits::hash(K, Ctx) % capacity();
+  template <typename Key, typename TraitsT>
+  const_iterator find_as(const Key &K, TraitsT &Traits) const {
+    uint32_t H = Traits.hashLookupKey(K) % capacity();
     uint32_t I = H;
     Optional<uint32_t> FirstUnused;
     do {
       if (isPresent(I)) {
-        if (Traits::realKey(Buckets[I].first, Ctx) == K)
-          return HashTableIterator(*this, I, false);
+        if (Traits.storageKeyToLookupKey(Buckets[I].first) == K)
+          return const_iterator(*this, I, false);
       } else {
         if (!FirstUnused)
           FirstUnused = I;
@@ -111,35 +244,22 @@ public:
     // table were Present.  But this would violate the load factor constraints
     // that we impose, so it should never happen.
     assert(FirstUnused);
-    return HashTableIterator(*this, *FirstUnused, true);
+    return const_iterator(*this, *FirstUnused, true);
   }
-
-  /// Set the entry with the specified key to the specified value.
-  void set(uint32_t K, uint32_t V);
 
   /// Set the entry using a key type that the specified Traits can convert
   /// from a real key to an internal key.
-  template <typename Traits, typename Key, typename Context>
-  bool set_as(const Key &K, uint32_t V, Context &Ctx) {
-    return set_as_internal<Traits, Key, Context>(K, V, None, Ctx);
+  template <typename Key, typename TraitsT>
+  bool set_as(const Key &K, ValueT V, TraitsT &Traits) {
+    return set_as_internal(K, std::move(V), Traits, None);
   }
 
-  void remove(uint32_t K);
-
-  template <typename Traits, typename Key, typename Context>
-  void remove_as(const Key &K, Context &Ctx) {
-    auto Iter = find_as<Traits, Key, Context>(K, Ctx);
-    // It wasn't here to begin with, just exit.
-    if (Iter == end())
-      return;
-
-    assert(Present.test(Iter.index()));
-    assert(!Deleted.test(Iter.index()));
-    Deleted.set(Iter.index());
-    Present.reset(Iter.index());
+  template <typename Key, typename TraitsT>
+  ValueT get(const Key &K, TraitsT &Traits) const {
+    auto Iter = find_as(K, Traits);
+    assert(Iter != end());
+    return (*Iter).second;
   }
-
-  uint32_t get(uint32_t K);
 
 protected:
   bool isPresent(uint32_t K) const { return Present.test(K); }
@@ -152,13 +272,13 @@ protected:
 private:
   /// Set the entry using a key type that the specified Traits can convert
   /// from a real key to an internal key.
-  template <typename Traits, typename Key, typename Context>
-  bool set_as_internal(const Key &K, uint32_t V, Optional<uint32_t> InternalKey,
-                       Context &Ctx) {
-    auto Entry = find_as<Traits, Key, Context>(K, Ctx);
+  template <typename Key, typename TraitsT>
+  bool set_as_internal(const Key &K, ValueT V, TraitsT &Traits,
+                       Optional<uint32_t> InternalKey) {
+    auto Entry = find_as(K, Traits);
     if (Entry != end()) {
       assert(isPresent(Entry.index()));
-      assert(Traits::realKey(Buckets[Entry.index()].first, Ctx) == K);
+      assert(Traits.storageKeyToLookupKey(Buckets[Entry.index()].first) == K);
       // We're updating, no need to do anything special.
       Buckets[Entry.index()].second = V;
       return false;
@@ -167,37 +287,37 @@ private:
     auto &B = Buckets[Entry.index()];
     assert(!isPresent(Entry.index()));
     assert(Entry.isEnd());
-    B.first = InternalKey ? *InternalKey : Traits::lowerKey(K, Ctx);
+    B.first = InternalKey ? *InternalKey : Traits.lookupKeyToStorageKey(K);
     B.second = V;
     Present.set(Entry.index());
     Deleted.reset(Entry.index());
 
-    grow<Traits, Key, Context>(Ctx);
+    grow(Traits);
 
-    assert((find_as<Traits, Key, Context>(K, Ctx)) != end());
+    assert((find_as(K, Traits)) != end());
     return true;
   }
 
-  static uint32_t maxLoad(uint32_t capacity);
+  static uint32_t maxLoad(uint32_t capacity) { return capacity * 2 / 3 + 1; }
 
-  template <typename Traits, typename Key, typename Context>
-  void grow(Context &Ctx) {
+  template <typename TraitsT>
+  void grow(TraitsT &Traits) {
     uint32_t S = size();
+    uint32_t MaxLoad = maxLoad(capacity());
     if (S < maxLoad(capacity()))
       return;
     assert(capacity() != UINT32_MAX && "Can't grow Hash table!");
 
-    uint32_t NewCapacity =
-        (capacity() <= INT32_MAX) ? capacity() * 2 : UINT32_MAX;
+    uint32_t NewCapacity = (capacity() <= INT32_MAX) ? MaxLoad * 2 : UINT32_MAX;
 
     // Growing requires rebuilding the table and re-hashing every item.  Make a
     // copy with a larger capacity, insert everything into the copy, then swap
     // it in.
     HashTable NewMap(NewCapacity);
     for (auto I : Present) {
-      auto RealKey = Traits::realKey(Buckets[I].first, Ctx);
-      NewMap.set_as_internal<Traits, Key, Context>(RealKey, Buckets[I].second,
-                                                   Buckets[I].first, Ctx);
+      auto LookupKey = Traits.storageKeyToLookupKey(Buckets[I].first);
+      NewMap.set_as_internal(LookupKey, Buckets[I].second, Traits,
+                             Buckets[I].first);
     }
 
     Buckets.swap(NewMap.Buckets);
@@ -206,11 +326,6 @@ private:
     assert(capacity() == NewCapacity);
     assert(size() == S);
   }
-
-  static Error readSparseBitVector(BinaryStreamReader &Stream,
-                                   SparseBitVector<> &V);
-  static Error writeSparseBitVector(BinaryStreamWriter &Writer,
-                                    SparseBitVector<> &Vec);
 };
 
 } // end namespace pdb
